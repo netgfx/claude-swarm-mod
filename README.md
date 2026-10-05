@@ -2,6 +2,10 @@
 
 A Claude Code mod for running a swarm of agents from a side pane. You spawn agents, watch their live state and token use, answer their approvals and questions, and message them, all from the session you started in.
 
+| Swarm pane | Spawn form |
+|---|---|
+| ![The swarm pane: a Spawn agent button, Rosters, one finished reviewer agent with its token count, Broadcast and Clear finished](docs/images/swarm-pane.png) | ![The spawn form: transport, agent type, model, thinking effort, name, color, approval mode, auto-restart, task and workspace](docs/images/spawn-form.png) |
+
 Supports **Windows** and **macOS** (Linux best effort). Tested with Claude Code **v2.1.289** on Windows 11 (PowerShell 7 and Windows Terminal). The macOS paths are covered by unit tests, and the generated launch script was checked with a POSIX shell, but they haven't been run on a Mac yet.
 
 ## What it does
