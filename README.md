@@ -8,6 +8,26 @@ A Claude Code mod for running a swarm of agents from a side pane. You spawn agen
 
 Supports **Windows** and **macOS** (Linux best effort). Tested with Claude Code **v2.1.289** on Windows 11 (PowerShell 7 and Windows Terminal). The macOS paths are covered by unit tests, and the generated launch script was checked with a POSIX shell, but they haven't been run on a Mac yet.
 
+## Install
+
+This repo is a Claude Code plugin marketplace. Inside Claude Code:
+
+```text
+/plugin marketplace add netgfx/claude-swarm-mod
+/plugin install swarm-mod@claude-swarm-mod
+```
+
+Or from a shell:
+
+```shell
+claude plugin marketplace add netgfx/claude-swarm-mod
+claude plugin install swarm-mod@claude-swarm-mod
+```
+
+Restart Claude Code (or run `/reload-plugins`), then type `/swarm`. To get updates later, run `claude plugin marketplace update claude-swarm-mod`.
+
+For teammates that join this session's agent team, also set `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` (see [Transports](#transports)). To run it from a local checkout instead, see [Load it from a checkout](#load-it-from-a-checkout).
+
 ## What it does
 
 | Feature | How |
@@ -81,7 +101,7 @@ A request waiting for you is held for up to 15 minutes for teammates and 3 minut
 - Agent panel keys: `y` approve, `d` deny, `l` use its own prompt, `o` copy its error, `w` open its window, `i` interrupt, `k` kill, `p` respawn, `a` toggle auto-restart, `e` expand, `r` remove, `c` close.
 - Rosters pane: type a name and press Enter to save; Launch or Delete each roster; `c` close.
 
-## Load it
+## Load it from a checkout
 
 PowerShell:
 
@@ -103,7 +123,7 @@ On macOS, the first time you use `w: Open its window` (or launch into iTerm2), m
 
 For the Desktop app (Code tab), add the folder to `env.CLAUDE_CODE_PLUGIN_DIRS` in `~/.claude/settings.json` (paths separated by `;` on Windows, `:` on macOS), then start a new session. The sidebar docks in a fullscreen terminal at least 144 columns wide (110 once you've opened it yourself). Narrower than that, panes open inline above the prompt.
 
-If you install swarm-mod from a marketplace instead, workers still get `--plugin-dir` pointing at the installed copy.
+When swarm-mod is installed from the marketplace, separate-session workers get `--plugin-dir` pointing at the installed copy, so they run the same version as the lead.
 
 ## Tests
 
@@ -112,6 +132,10 @@ Set-Location D:\Projects\Projects\claude-plugins\swarm-mod; claude plugin test
 ```
 
 41 tests in two files cover the following. `tests/lifecycle.test.ts` covers kill-all (the two-press confirm, TaskStop, kill by PID, the reused-PID guard, a worker ending itself), the auto-restart policy (failure, deliberate exits, hang detection, backoff, the restart limit), respawn and the auto-restart toggle, saving, launching and deleting rosters (with name and color fitting), restoring the last swarm, and the new panes on both surfaces. `tests/swarm.test.ts` covers: color picking, name rules, mapping a picked model to the alias `$.agent.spawn` accepts, approval-mode decisions, quoting of the worker CLI and launch script, path conflicts, the spawn form, per-agent effort and token counting, accept-edits and plan modes, an approval held and then approved from the pane, a question answered from the pane, launches on Windows and macOS (Terminal.app and iTerm2, the login-shell script, the tty record, focus by tty with balanced AppleScript blocks, case-insensitive paths on APFS), worker reporting, lead pickup and messaging, every pane plus the band on both terminal and Desktop, and a refused spawn keeping its full error (which you can copy from the agent's row).
+
+## Releasing
+
+`.claude-plugin/plugin.json` is the plugin manifest and `.claude-plugin/marketplace.json` makes this repo a one-plugin marketplace (`"source": "./"`). `claude plugin validate .` checks both. When you release, bump `version` in both files so `claude plugin marketplace update` picks up the change.
 
 ## What the mod calls (from `claude plugin validate`)
 
@@ -137,3 +161,7 @@ Environment variables read: `OS`, `USERPROFILE`, `HOME`, `TERM_PROGRAM`, `CLAUDE
 7. **Pause all**: interrupt every agent's turn without killing it, then resume.
 8. **Auto-launch a roster** when a workspace opens (opt-in per roster).
 9. **Remote approvals from your phone** through Remote Control, using the same approval path.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

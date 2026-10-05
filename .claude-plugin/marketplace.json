@@ -1,0 +1,22 @@
+{
+  "name": "claude-swarm-mod",
+  "owner": { "name": "djmid", "email": "djmid71@gmail.com" },
+  "metadata": {
+    "description": "swarm-mod: spawn, watch and steer a swarm of Claude Code agents from a side pane",
+    "version": "0.3.0"
+  },
+  "plugins": [
+    {
+      "name": "swarm-mod",
+      "source": "./",
+      "description": "Spawn, watch and steer a swarm of Claude Code agents from a side pane: live status and token use, approvals and questions, messaging, kill and auto-restart, saved rosters",
+      "version": "0.3.0",
+      "author": { "name": "djmid", "email": "djmid71@gmail.com" },
+      "homepage": "https://github.com/netgfx/claude-swarm-mod",
+      "repository": "https://github.com/netgfx/claude-swarm-mod",
+      "license": "MIT",
+      "keywords": ["swarm", "agents", "teammates", "orchestration", "pane", "mod"],
+      "category": "productivity"
+    }
+  ]
+}

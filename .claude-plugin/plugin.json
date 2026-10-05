@@ -2,6 +2,10 @@
   "name": "swarm-mod",
   "version": "0.3.0",
   "description": "Spawn, watch and steer a swarm of Claude Code agents from a side pane",
-  "author": { "name": "djmid" },
+  "author": { "name": "djmid", "email": "djmid71@gmail.com" },
+  "homepage": "https://github.com/netgfx/claude-swarm-mod",
+  "repository": "https://github.com/netgfx/claude-swarm-mod",
+  "license": "MIT",
+  "keywords": ["swarm", "agents", "teammates", "orchestration", "pane", "mod"],
   "types": "./types/index.d.ts"
 }
