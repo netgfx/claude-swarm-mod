@@ -1,0 +1,7 @@
+{
+  "name": "swarm-mod",
+  "version": "0.3.0",
+  "description": "Spawn, watch and steer a swarm of Claude Code agents from a side pane",
+  "author": { "name": "djmid" },
+  "types": "./types/index.d.ts"
+}

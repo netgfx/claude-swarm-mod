@@ -1,0 +1,7 @@
+# Local Claude Code settings and per-machine agent memory
+.claude/settings.local.json
+**/.claude/agent-memory/
+
+node_modules/
+.DS_Store
+Thumbs.db
