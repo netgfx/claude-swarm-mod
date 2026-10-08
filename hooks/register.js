@@ -1049,11 +1049,11 @@ function renderMain($, e) {
       columnGap: 2,
       children: [
         Button({ key: 'spawn', label: 'n: + Spawn agent', hotkey: 'n', onPress: () => openWizard($) }),
-        Button({ key: 'rosters', label: 'r: Rosters', hotkey: 'r', plain: true, onPress: () => openRosters($) }),
+        Button({ key: 'rosters', label: 'Rosters', hotkey: 'r', plain: true, onPress: () => openRosters($) }),
         ...(liveCount
           ? [Button({
               key: 'kill-all',
-              label: killArmed ? 'k: Press again to kill ' + liveCount : 'k: Kill all',
+              label: killArmed ? 'k: Press again to kill ' + liveCount : 'Kill all',
               hotkey: 'k',
               ...(killArmed ? {} : { plain: true }),
               onPress: async () => {
@@ -1134,7 +1134,7 @@ function renderMain($, e) {
       rows.push(
         Button({
           key: 'clear-done',
-          label: 'x: Clear finished',
+          label: 'Clear finished',
           hotkey: 'x',
           plain: true,
           onPress: async () => {
@@ -1278,7 +1278,7 @@ async function renderDetail($, e, key) {
         children: [
           Text({ bold: true, color: '#ff5555', children: ['✕ Error'] }),
           Text({ children: [a.error.length > 4000 ? a.error.slice(0, 4000) + '…' : a.error] }),
-          Button({ key: 'copy-error', label: 'o: Copy error', hotkey: 'o', plain: true, onPress: (press) => copyError($, key, press) }),
+          Button({ key: 'copy-error', label: 'Copy error', hotkey: 'o', plain: true, onPress: (press) => copyError($, key, press) }),
         ],
       }),
     )
@@ -1408,7 +1408,7 @@ async function renderDetail($, e, key) {
   else actions.push(Button({ key: 'respawn', label: 'p: Respawn', hotkey: 'p', onPress: () => restartAgent($, key, true) }))
   actions.push(Button({
     key: 'auto-restart',
-    label: 'a: Auto-restart ' + (a.autoRestart ? 'on' : 'off') + (a.restarts ? ' (' + a.restarts + '/' + RESTART_MAX + ' used)' : ''),
+    label: 'Auto-restart ' +(a.autoRestart ? 'on' : 'off') + (a.restarts ? ' (' + a.restarts + '/' + RESTART_MAX + ' used)' : ''),
     hotkey: 'a',
     plain: true,
     onPress: () => {
@@ -1418,8 +1418,8 @@ async function renderDetail($, e, key) {
     },
   }))
   actions.push(Button({ key: 'expand', label: expanded[key] ? 'e: Compact' : 'e: Expand', hotkey: 'e', onPress: async () => { expanded[key] = !expanded[key]; await openDetail($, key); $.ui.invalidate('ui.render') } }))
-  actions.push(Button({ key: 'remove', label: 'r: Remove', hotkey: 'r', plain: true, onPress: () => removeAgent($, key) }))
-  actions.push(Button({ key: 'close', label: 'c: Close', hotkey: 'c', plain: true, onPress: () => $.ui.close({ id: e.requestId }) }))
+  actions.push(Button({ key: 'remove', label: 'Remove', hotkey: 'r', plain: true, onPress: () => removeAgent($, key) }))
+  actions.push(Button({ key: 'close', label: 'Close', hotkey: 'c', plain: true, onPress: () => $.ui.close({ id: e.requestId }) }))
   parts.push(Box({ flexDirection: 'row', columnGap: 2, children: actions }))
   if (a.transport === 'teammate') {
     parts.push(Text({ dimColor: true, children: ['Tip: you can also select it in the agent panel under the prompt and press Enter to talk to it there.'] }))
@@ -1474,7 +1474,7 @@ function renderRosters($, e) {
       }),
     )
   }
-  rows.push(Button({ key: 'r-close', label: 'c: Close', hotkey: 'c', plain: true, onPress: () => $.ui.close({ id: ROSTERS }) }))
+  rows.push(Button({ key: 'r-close', label: 'Close', hotkey: 'c', plain: true, onPress: () => $.ui.close({ id: ROSTERS }) }))
   return Box({ flexDirection: 'column', children: rows })
 }
 
