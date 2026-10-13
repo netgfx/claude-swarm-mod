@@ -90,6 +90,13 @@ export function suggestName(base, taken) {
   return clean + '-' + Date.now()
 }
 
+// A swarm name for a subagent someone else spawned: its own name, else a slug of
+// its description ("Game UI / HUD cards" -> "game-ui-hud-cards"), else its type
+export function adoptedName(info, taken) {
+  const slug = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9_]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30).replace(/-+$/, '')
+  return suggestName(slug(info.name) || slug(info.description) || slug(info.type) || 'subagent', taken)
+}
+
 export function validateName(name, taken) {
   if (!NAME_RE.test(name)) return 'Name: 1-40 letters, digits, - or _'
   if (taken.map((t) => t.toLowerCase()).includes(name.toLowerCase())) return 'Name "' + name + '" is taken in this swarm'

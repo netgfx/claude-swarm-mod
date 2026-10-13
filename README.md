@@ -45,6 +45,7 @@ For teammates that join this session's agent team, also set `CLAUDE_CODE_EXPERIM
 | **Kill all** | `k: Kill all` in the swarm pane (press twice within 6 s to confirm), or `/swarm kill-all`. Pending approvals are denied so nothing waits on a dead agent, and killed agents are never auto-restarted. |
 | **Auto-restart** | Off by default. Turn it on in the spawn form or with `a` in an agent's panel. A teammate that **failed**, or a separate session that **crashed**, **exited unexpectedly**, or **hung** (no heartbeat for a full minute of the main session's own time, so waking from sleep doesn't count), comes back with the same name, color, model, effort, approval mode and task. The task is prefixed with a note to check the workspace first. The backoff is 5 s, 15 s and 45 s, for up to 3 restarts. A hung session is killed first. Kill, `/exit`, and the agent panel's stop are treated as deliberate and never undone. `p: Respawn` brings back any stopped agent by hand. |
 | **Saved rosters** | `r: Rosters` (or `/swarm rosters`) saves the current swarm under a name: each agent's name, color, type, model, effort, approval mode, transport, task and auto-restart. Launch a roster in any workspace with one click (or `/swarm load <name>`). Names and colors already in use are adjusted (`scout` → `scout-2`). Rosters live in the mod store, shared by every session on this machine. |
+| **Every subagent, whoever spawned it** | Subagents and teammates spawned outside the swarm (Claude's own Agent calls, another plugin's spawns, ones started before the mod loaded) join the swarm too, named after their description (`Game UI / HUD / cards` → `game-ui-hud-cards`). You see their status, current tool and tokens, can message, kill or remove them, and **Edit** them (`m` in their panel) to rename, recolor, or change type, model, effort, approval mode, task and auto-restart, then save them in a roster. They keep Claude Code's own permission prompt and questions. They stay out of the automatic last swarm until you save a roster. A removed one is not added back. |
 | **Restore last swarm** | Each workspace's latest swarm is saved automatically. When you start Claude Code there again, the band and the pane offer **Restore last swarm (N)** (or `/swarm restore`). |
 
 ### Transports
@@ -98,7 +99,7 @@ A request waiting for you is held for up to 15 minutes for teammates and 3 minut
 - `/swarm-spawn`: open the spawn form.
 - Tool `mcp__swarm-mod__swarm_status`: lets the lead Claude read the roster (status, activity, tokens, what's waiting on you, last answers) before it coordinates.
 - Pane keys: `n` spawn, `r` rosters, `k` kill all (twice), `x` clear finished.
-- Agent panel keys: `y` approve, `d` deny, `l` use its own prompt, `o` copy its error, `w` open its window, `i` interrupt, `k` kill, `p` respawn, `a` toggle auto-restart, `e` expand, `r` remove, `c` close.
+- Agent panel keys: `y` approve, `d` deny, `l` use its own prompt, `o` copy its error, `w` open its window, `i` interrupt, `k` kill, `p` respawn, `a` toggle auto-restart, `e` expand, `m` edit, `r` remove, `c` close.
 - Rosters pane: type a name and press Enter to save; Launch or Delete each roster; `c` close.
 
 ## Load it from a checkout
@@ -131,7 +132,7 @@ When swarm-mod is installed from the marketplace, separate-session workers get `
 Set-Location D:\Projects\Projects\claude-plugins\swarm-mod; claude plugin test
 ```
 
-41 tests in two files cover the following. `tests/lifecycle.test.ts` covers kill-all (the two-press confirm, TaskStop, kill by PID, the reused-PID guard, a worker ending itself), the auto-restart policy (failure, deliberate exits, hang detection, backoff, the restart limit), respawn and the auto-restart toggle, saving, launching and deleting rosters (with name and color fitting), restoring the last swarm, and the new panes on both surfaces. `tests/swarm.test.ts` covers: color picking, name rules, mapping a picked model to the alias `$.agent.spawn` accepts, approval-mode decisions, quoting of the worker CLI and launch script, path conflicts, the spawn form, per-agent effort and token counting, accept-edits and plan modes, an approval held and then approved from the pane, a question answered from the pane, launches on Windows and macOS (Terminal.app and iTerm2, the login-shell script, the tty record, focus by tty with balanced AppleScript blocks, case-insensitive paths on APFS), worker reporting, lead pickup and messaging, every pane plus the band on both terminal and Desktop, and a refused spawn keeping its full error (which you can copy from the agent's row).
+50 tests in three files cover the following. `tests/adopt.test.ts` covers subagents spawned outside the swarm: naming, adoption at spawn, from the agent list and from their first loop event, no double entry for the swarm's own spawns, keeping the native permission prompt, editing and saving one in a roster, kill and remove, and the edit form on both surfaces. `tests/lifecycle.test.ts` covers kill-all (the two-press confirm, TaskStop, kill by PID, the reused-PID guard, a worker ending itself), the auto-restart policy (failure, deliberate exits, hang detection, backoff, the restart limit), respawn and the auto-restart toggle, saving, launching and deleting rosters (with name and color fitting), restoring the last swarm, and the new panes on both surfaces. `tests/swarm.test.ts` covers: color picking, name rules, mapping a picked model to the alias `$.agent.spawn` accepts, approval-mode decisions, quoting of the worker CLI and launch script, path conflicts, the spawn form, per-agent effort and token counting, accept-edits and plan modes, an approval held and then approved from the pane, a question answered from the pane, launches on Windows and macOS (Terminal.app and iTerm2, the login-shell script, the tty record, focus by tty with balanced AppleScript blocks, case-insensitive paths on APFS), worker reporting, lead pickup and messaging, every pane plus the band on both terminal and Desktop, and a refused spawn keeping its full error (which you can copy from the agent's row).
 
 ## Releasing
 
@@ -161,6 +162,12 @@ Environment variables read: `OS`, `USERPROFILE`, `HOME`, `TERM_PROGRAM`, `CLAUDE
 7. **Pause all**: interrupt every agent's turn without killing it, then resume.
 8. **Auto-launch a roster** when a workspace opens (opt-in per roster).
 9. **Remote approvals from your phone** through Remote Control, using the same approval path.
+
+## Changes
+
+- **0.4.0**: Every subagent or teammate spawned in the session joins the swarm, not just the ones spawned from the pane. An **Edit** form renames and retunes any agent, so ad-hoc subagents can be saved as a roster.
+- **0.3.1**: Button labels drop the `x:` hotkey prefix (the hotkeys still work). The repo is now a plugin marketplace: install with `/plugin marketplace add netgfx/claude-swarm-mod`.
+- **0.3.0**: First release: spawn, watch and steer a swarm of agents from a pane.
 
 ## License
 

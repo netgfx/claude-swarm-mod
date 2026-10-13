@@ -11,7 +11,7 @@
 
 import {
   PALETTE, MODES, MODELS, EFFORTS, APPROVALS, BUILTIN_AGENTS, EDIT_TOOLS,
-  colorName, pickColor, labelOf, suggestName, validateName, fmtTokens, emptyTokens,
+  colorName, pickColor, labelOf, suggestName, adoptedName, validateName, fmtTokens, emptyTokens,
   addUsage, totalTokens, clip, summarizeTool, describeCall, baseName, decide, statusView,
   isLive, launchScript, launchCandidates, WORKER_SETTINGS, focusArgv, parseAgentFile, findConflicts, randomId,
   selfPidArgv, parsePidLine, pidNameArgv, killArgv, RESTART_MAX, restartDelayMs, needsRestart, restartTask,
@@ -56,6 +56,8 @@ let rosterNameDraft = ''
 let rosterError = ''
 let lastRoster = null // this workspace's last swarm, offered after a restart of Claude Code
 let lastSavedSig = ''
+let dismissed = {} // agentId -> true: subagents you removed, never adopted again
+let missUntil = {} // agentId -> time: loops no agent list names (workflow agents, forks), not looked up again until then
 
 // ---- worker state (only when this session was launched by a lead) ----
 let worker = null // { id, lead, name, approval }
@@ -109,7 +111,7 @@ async function persist($) {
   if (!snapshotDirty) return
   snapshotDirty = false
   try {
-    await $.state.set({ plugin: 'swarm-mod', key: 'snapshot' }, { agents, order })
+    await $.state.set({ plugin: 'swarm-mod', key: 'snapshot' }, { agents, order, dismissed: Object.keys(dismissed) })
   } catch {}
 }
 
@@ -120,6 +122,7 @@ async function restore($) {
       agents = { ...value.agents }
       order = value.order.filter((k) => agents[k])
     }
+    if (value && Array.isArray(value.dismissed)) for (const id of value.dismissed) dismissed[id] = true
   } catch {}
 }
 
@@ -149,20 +152,30 @@ function keyOfAgentId(agentId) {
   return null
 }
 
-// Matches a loop id to a teammate whose spawn has not resolved yet
+// Matches a loop id to a teammate whose spawn has not resolved yet, or adopts the
+// subagent it belongs to
 async function resolveKey($, agentId) {
   const k = keyOfAgentId(agentId)
-  if (k || !agentId) return k
+  if (k || !agentId || worker || dismissed[agentId]) return k
+  const now = await $.clock.now()
+  if (missUntil[agentId] > now) return null
   const waiting = order.filter((x) => agents[x].transport === 'teammate' && !agents[x].agentId && agents[x].status === 'pending')
-  if (!waiting.length) return null
   try {
     const list = await $.agent.list()
     const hit = list.find((x) => x.id === agentId)
-    if (!hit) return null
+    if (!hit) {
+      missUntil[agentId] = now + 10000
+      return null
+    }
     const kk = waiting.find((x) => agents[x].name === hit.name || String(hit.teammateId || '').startsWith(agents[x].name + '@'))
     if (kk) {
       agents[kk].agentId = agentId
       return kk
+    }
+    if (hit.spawnedBy !== 'swarm-mod') {
+      const ak = adopt({ agentId, name: hit.name, description: hit.description, type: hit.type, status: hit.status, teammateId: hit.teammateId, parentAgentId: hit.parentId }, now)
+      if (ak) changed($)
+      return ak
     }
   } catch {}
   return null
@@ -170,6 +183,40 @@ async function resolveKey($, agentId) {
 
 function liveColors(exceptKey) {
   return order.filter((k) => k !== exceptKey && isLive(agents[k])).map((k) => agents[k].color)
+}
+
+// Takes a subagent or teammate the swarm did not spawn (the model's Agent calls, another
+// plugin's) into the swarm, so it can be watched, renamed and saved in a roster.
+// info: { agentId, name, description, type, model, prompt, status, teammateId, parentAgentId }
+// Already adopted (its loop's events came first): fills in what the spawn tells.
+function adopt(info, now) {
+  if (worker || !info.agentId || dismissed[info.agentId]) return null
+  const known = keyOfAgentId(info.agentId)
+  if (known) {
+    const a = agents[known]
+    if (!a.adopted) return null
+    if (info.prompt && !a.task) a.task = info.prompt
+    if (info.model && a.model === 'inherit') a.model = info.model
+    if (info.resolvedModel) a.resolvedModel = info.resolvedModel
+    if (info.description && !a.description) a.description = info.description
+    if (info.name && !a.address) a.address = info.name
+    if (info.teammateId && !a.teammateId) a.teammateId = info.teammateId
+    return known
+  }
+  const key = randomId()
+  agents[key] = {
+    key, name: adoptedName(info, order.map((k) => agents[k].name)), color: pickColor(liveColors()),
+    agentType: info.type && !['teammate', 'general-purpose', 'fork'].includes(info.type) ? info.type : 'default', model: info.model || 'inherit',
+    effort: 'default', approval: 'default', transport: 'teammate', autoRestart: false, restarts: 0,
+    status: info.status || 'running', activity: '', tokens: emptyTokens(), ctx: 0, turns: 0, pending: null,
+    log: [{ t: now, text: clip('spawned outside the swarm: ' + (info.description || info.type || 'subagent'), 160) }],
+    files: [], lastAnswer: '', startedAt: now, task: info.prompt || '',
+    adopted: true, description: info.description || '', agentId: info.agentId,
+    teammateId: info.teammateId || null, address: info.name || '', parentAgentId: info.parentAgentId || '',
+    resolvedModel: info.resolvedModel || '',
+  }
+  order = [...order, key]
+  return key
 }
 
 // ======================= worker side =======================
@@ -268,7 +315,7 @@ async function leadTick($) {
   let dirty = false
   const now = (await $.clock.now())
 
-  if (order.some((k) => agents[k].transport === 'teammate' && isLive(agents[k]))) {
+  if (!worker) {
     let list = null
     try {
       list = await $.agent.list()
@@ -282,6 +329,12 @@ async function leadTick($) {
           a.agentId = hit.id
           dirty = true
         }
+      }
+      // subagents spawned outside the swarm: before this mod loaded, or while it reloaded
+      for (const x of list) {
+        if (x.spawnedBy === 'swarm-mod') continue
+        const isNew = !keyOfAgentId(x.id)
+        if (adopt({ agentId: x.id, name: x.name, description: x.description, type: x.type, status: x.status, teammateId: x.teammateId, parentAgentId: x.parentId }, now) && isNew) dirty = true
       }
       for (const k of order) {
         const a = agents[k]
@@ -374,7 +427,7 @@ async function tick($) {
   ticking = true
   try {
     if (worker && w) await workerTick($)
-    if (order.length) await leadTick($)
+    if (order.length || !worker) await leadTick($)
     await persist($)
     await saveLastRoster($)
   } finally {
@@ -383,6 +436,11 @@ async function tick($) {
 }
 
 // ======================= kill, restart =======================
+
+// What TaskStop knows an in-process agent by
+function taskIdOf(a) {
+  return a.teammateId || (a.adopted ? a.agentId : a.address || a.name)
+}
 
 // Ends a separate session's process, after checking its pid still names the same program
 async function killPid($, a) {
@@ -413,7 +471,7 @@ async function killAgent($, key) {
   if (a.transport === 'teammate') {
     if (isLive(a)) {
       try {
-        await $.tool.call({ tool: 'TaskStop', task_id: a.teammateId || a.name })
+        await $.tool.call({ tool: 'TaskStop', task_id: taskIdOf(a) })
       } catch (err) {
         $.ui.log('swarm: TaskStop ' + a.name + ': ' + (err && err.message), { to: 'debug' })
       }
@@ -476,6 +534,7 @@ async function restartAgent($, key, manual) {
   } else {
     a.agentId = null
     a.teammateId = null
+    a.adopted = false
     a.status = 'pending'
     await spawnTeammate($, a, manual ? a.task : restartTask(a.task))
   }
@@ -485,14 +544,16 @@ async function restartAgent($, key, manual) {
 
 // ======================= saved rosters =======================
 
-function currentRoster() {
-  return order.map((k) => rosterEntry(agents[k]))
+function currentRoster(onlyOwn) {
+  return order.filter((k) => !onlyOwn || !agents[k].adopted).map((k) => rosterEntry(agents[k]))
 }
 
-// Keeps this workspace's latest swarm, offered again when Claude Code restarts here
+// Keeps this workspace's latest swarm, offered again when Claude Code restarts here.
+// Subagents it only adopted stay out: save a roster to keep them.
 async function saveLastRoster($) {
   if (worker || !order.length) return
-  const entries = currentRoster()
+  const entries = currentRoster(true)
+  if (!entries.length) return
   const sig = JSON.stringify(entries)
   if (sig === lastSavedSig) return
   lastSavedSig = sig
@@ -696,7 +757,8 @@ async function scanAgentFiles($) {
   }
 }
 
-async function openWizard($) {
+// The spawn form; with a key, the same form edits that agent instead
+async function openWizard($, editKey) {
   await scanAgentFiles($)
   const taken = order.map((k) => agents[k].name)
   let teamsOn = false
@@ -720,9 +782,50 @@ async function openWizard($) {
     autoRestart: false,
     cwd,
   }
+  const a = editKey && agents[editKey]
+  if (a) {
+    draft = {
+      ...draft, editKey, mode: a.transport, agentType: a.agentType, model: a.model, effort: a.effort, approval: a.approval,
+      name: a.name, color: a.color, task: a.task || '', autoRestart: !!a.autoRestart,
+    }
+    if (a.agentType !== 'default' && !agentTypes[a.agentType] && !BUILTIN_AGENTS.includes(a.agentType)) agentTypes[a.agentType] = ''
+  }
   wizardError = ''
   openPick = null
-  await $.ui.open({ id: WIZARD, title: 'Spawn agent', focus: true, closeOnEscape: true, rows: 36 })
+  await $.ui.open({ id: WIZARD, title: a ? 'Edit ' + a.name : 'Spawn agent', focus: true, closeOnEscape: true, rows: 36 })
+}
+
+// Saves the form onto the agent it edits. Name, color, effort and approval mode take
+// effect now; type, model, transport and task when it respawns or launches from a roster.
+async function saveEdit($) {
+  const d = draft
+  const a = d && agents[d.editKey]
+  if (!a) return
+  const name = String(d.name || '').trim()
+  const err = validateName(name, order.filter((k) => k !== a.key).map((k) => agents[k].name))
+  if (err) {
+    wizardError = err
+    $.ui.invalidate('ui.render')
+    return
+  }
+  if (d.color !== a.color && liveColors(a.key).includes(d.color) && liveColors(a.key).length < PALETTE.length) {
+    wizardError = 'That color is in use; pick another'
+    $.ui.invalidate('ui.render')
+    return
+  }
+  if (name !== a.name) pushLog(a, 'renamed from ' + a.name, await $.clock.now())
+  Object.assign(a, {
+    name, color: d.color, agentType: d.agentType, model: d.model, effort: d.effort, approval: d.approval,
+    task: d.task || '', autoRestart: !!d.autoRestart,
+  })
+  if (!isLive(a)) a.transport = d.mode
+  if (!a.autoRestart) a.restartAt = null
+  draft = null
+  try {
+    await $.ui.close({ id: WIZARD })
+  } catch {}
+  await toast($, 'Saved ' + name)
+  changed($)
 }
 
 async function spawnTeammate($, a, taskOverride) {
@@ -753,6 +856,7 @@ async function spawnTeammate($, a, taskOverride) {
   a.teammateId = r.teammateId
   a.resolvedModel = r.model
   if (r.teammateId) a.name = String(r.teammateId).split('@')[0] || a.name
+  a.address = a.name
   // without an id yet, it stays pending and is matched by name from $.agent.list()
   if (a.agentId && a.status === 'pending') a.status = 'running'
   a.activity = ''
@@ -819,7 +923,7 @@ async function launchWorker($, a, taskOverride) {
 
 async function spawnFromDraft($) {
   const d = draft
-  if (!d) return
+  if (!d || d.editKey) return
   const taken = order.map((k) => agents[k].name)
   const name = String(d.name || '').trim()
   const err = validateName(name, taken)
@@ -909,7 +1013,7 @@ async function sendTo($, key, text) {
   if (!to) return false
   try {
     let r = await $.session.send({ to, text: t })
-    if (!r.isDelivered && a.transport === 'teammate') r = await $.session.send({ to: a.name, text: t })
+    if (!r.isDelivered && a.transport === 'teammate' && (a.address || !a.adopted)) r = await $.session.send({ to: a.address || a.name, text: t })
     if (r.isDelivered) {
       pushLog(a, '→ you: ' + t, (await $.clock.now()))
       changed($)
@@ -941,7 +1045,7 @@ async function stopAgent($, key) {
     pushLog(a, 'interrupt requested', (await $.clock.now()))
   } else {
     try {
-      await $.tool.call({ tool: 'TaskStop', task_id: a.teammateId || a.name })
+      await $.tool.call({ tool: 'TaskStop', task_id: taskIdOf(a) })
       pushLog(a, 'stop requested', (await $.clock.now()))
     } catch (err) {
       await toast($, 'Could not stop ' + a.name + ': ' + (err && err.message))
@@ -974,6 +1078,7 @@ async function removeAgent($, key) {
   if (!a) return
   delete agents[key]
   order = order.filter((k) => k !== key)
+  if (a.agentId) dismissed[a.agentId] = true
   try {
     await $.store.delete('w:' + key)
     await $.store.delete('r:' + key)
@@ -1003,7 +1108,7 @@ function statusText() {
       const a = agents[k]
       const sv = statusView(a)
       return [
-        a.name + ' (' + a.transport + ', ' + a.agentType + ', ' + labelOf(MODELS, a.model) + ', effort ' + a.effort + ', approval ' + a.approval + ')',
+        a.name + ' (' + (a.adopted ? 'subagent' : a.transport) + ', ' + a.agentType + ', ' + labelOf(MODELS, a.model) + ', effort ' + a.effort + ', approval ' + a.approval + ')',
         'status: ' + sv.word + (a.activity ? ' - ' + a.activity : ''),
         'tokens: ' + fmtTokens(totalTokens(a.tokens)) + ', turns: ' + (a.turns || 0) + (a.autoRestart ? ', auto-restart on (' + (a.restarts || 0) + '/' + RESTART_MAX + ' used)' : ''),
         a.pending ? 'waiting on the user: ' + a.pending.summary : '',
@@ -1109,7 +1214,7 @@ function renderMain($, e) {
           Text({
             dimColor: true,
             wrap: 'truncate-end',
-            children: ['  ' + (a.activity || (a.transport === 'session' ? 'own window' : 'teammate')) + ' · ' + fmtTokens(totalTokens(a.tokens)) + ' tok' + (a.autoRestart ? ' · ↻' + (a.restarts ? ' ' + a.restarts + '/' + RESTART_MAX : '') : '')],
+            children: ['  ' + (a.activity || (a.adopted ? 'subagent' + (a.description ? ': ' + a.description : '') : a.transport === 'session' ? 'own window' : 'teammate')) + ' · ' + fmtTokens(totalTokens(a.tokens)) + ' tok' + (a.autoRestart ? ' · ↻' + (a.restarts ? ' ' + a.restarts + '/' + RESTART_MAX : '') : '')],
           }),
         ],
       }),
@@ -1198,15 +1303,20 @@ function renderWizard($, e) {
     return Box({ flexDirection: 'column', children: [Text({ dimColor: true, children: ['Nothing to spawn.'] }), Button({ key: 'w-close', label: 'Close', onPress: () => $.ui.close({ id: WIZARD }) })] })
   }
   const d = draft
+  const editing = d.editKey ? agents[d.editKey] : null
   const typeOptions = [{ value: 'default', label: 'Default (general-purpose)' }]
   for (const t of [...BUILTIN_AGENTS.filter((b) => b !== 'general-purpose'), ...Object.keys(agentTypes).sort()]) {
     if (!typeOptions.some((o) => o.value === t)) typeOptions.push({ value: t, label: t + (agentTypes[t] ? ' - ' + clip(agentTypes[t], 50) : '') })
   }
-  const used = liveColors()
+  const used = liveColors(d.editKey)
   const colorOptions = PALETTE.filter((c) => !used.includes(c.hex) || c.hex === d.color).map((c) => ({ value: c.hex, label: c.name }))
   const options = colorOptions.length ? colorOptions : PALETTE.map((c) => ({ value: c.hex, label: c.name }))
   const notes = []
-  if (d.mode === 'teammate' && !d.teamsOn) {
+  if (editing) {
+    notes.push(Text({ dimColor: true, children: [isLive(editing)
+      ? 'Name, color, effort and approval apply now; type, model and task when it respawns or launches from a roster.'
+      : 'Applies when it respawns or launches from a roster.'] }))
+  } else if (d.mode === 'teammate' && !d.teamsOn) {
     notes.push(Text({ color: '#e5c07b', children: ['Agent teams are off (CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1). It will run as a named background agent instead.'] }))
   }
   if (d.mode === 'teammate' && ['auto'].includes(d.approval)) {
@@ -1220,8 +1330,10 @@ function renderWizard($, e) {
   return Box({
     flexDirection: 'column',
     children: [
-      Text({ bold: true, children: ['Spawn a swarm agent'] }),
-      picker($, ui, { key: 'mode', label: 'Runs as', options: MODES, value: d.mode, next: 'w-agent', set: (v) => { d.mode = v } }),
+      Text({ bold: true, children: [editing ? 'Edit ' + editing.name + (editing.adopted ? ' (spawned outside the swarm)' : '') : 'Spawn a swarm agent'] }),
+      editing && isLive(editing)
+        ? Text({ dimColor: true, children: ['Runs as: ' + labelOf(MODES, d.mode)] })
+        : picker($, ui, { key: 'mode', label: 'Runs as', options: MODES, value: d.mode, next: 'w-agent', set: (v) => { d.mode = v } }),
       picker($, ui, { key: 'agent', label: 'Agent', options: typeOptions, value: d.agentType, next: 'w-model', set: (v) => { d.agentType = v } }),
       picker($, ui, { key: 'model', label: 'Model', options: MODELS, value: d.model, next: 'w-effort', set: (v) => { d.model = v } }),
       picker($, ui, { key: 'effort', label: 'Thinking effort', options: EFFORTS, value: d.effort, next: 'w-name', set: (v) => { d.effort = v } }),
@@ -1237,7 +1349,9 @@ function renderWizard($, e) {
         flexDirection: 'row',
         columnGap: 2,
         children: [
-          Button({ key: 'w-spawn', label: 'Spawn ' + (String(d.name || '').trim() || 'agent'), onPress: () => spawnFromDraft($) }),
+          editing
+            ? Button({ key: 'w-save', label: 'Save', onPress: () => saveEdit($) })
+            : Button({ key: 'w-spawn', label: 'Spawn ' + (String(d.name || '').trim() || 'agent'), onPress: () => spawnFromDraft($) }),
           Button({ key: 'w-cancel', label: 'Cancel', onPress: async () => { draft = null; await $.ui.close({ id: WIZARD }) } }),
         ],
       }),
@@ -1261,11 +1375,15 @@ async function renderDetail($, e, key) {
       children: [
         Text({ color: a.color, children: ['●'] }),
         Text({ bold: true, color: a.color, children: [a.name] }),
-        Text({ dimColor: true, children: ['· ' + (a.transport === 'session' ? 'separate session' : a.teammateId ? 'teammate ' + a.teammateId : 'teammate')] }),
+        Text({ dimColor: true, children: ['· ' + (a.transport === 'session' ? 'separate session' : a.teammateId ? 'teammate ' + a.teammateId : a.adopted ? 'subagent' : 'teammate')] }),
       ],
     }),
   )
   parts.push(Text({ dimColor: true, wrap: 'truncate-end', children: [a.agentType + ' · ' + labelOf(MODELS, a.model) + (a.resolvedModel ? ' (' + a.resolvedModel + ')' : '') + ' · effort ' + a.effort + ' · ' + labelOf(APPROVALS, a.approval) + ' · ' + colorName(a.color)] }))
+  if (a.adopted) {
+    const parent = a.parentAgentId ? keyOfAgentId(a.parentAgentId) : null
+    parts.push(Text({ dimColor: true, wrap: 'truncate-end', children: ['spawned by ' + (parent ? agents[parent].name : a.parentAgentId ? 'a subagent' : 'Claude') + (a.description ? ' · ' + a.description : '')] }))
+  }
   parts.push(Text({ color: sv.color, bold: !!sv.bold, children: [sv.glyph + ' ' + sv.word + (a.activity ? ' · ' + a.activity : '')] }))
   parts.push(Text({ children: ['tokens ' + fmtTokens(totalTokens(t)) + '  (in ' + fmtTokens(t.input) + ' · out ' + fmtTokens(t.output) + ' · cache read ' + fmtTokens(t.cacheRead) + ' · cache write ' + fmtTokens(t.cacheWrite) + ')  ctx ' + fmtTokens(a.ctx) + ' · ' + (a.turns || 0) + ' turns'] }))
   if (a.status === 'failed' && a.error) {
@@ -1418,6 +1536,7 @@ async function renderDetail($, e, key) {
     },
   }))
   actions.push(Button({ key: 'expand', label: expanded[key] ? 'e: Compact' : 'e: Expand', hotkey: 'e', onPress: async () => { expanded[key] = !expanded[key]; await openDetail($, key); $.ui.invalidate('ui.render') } }))
+  actions.push(Button({ key: 'edit', label: 'Edit', hotkey: 'm', plain: true, onPress: () => openWizard($, key) }))
   actions.push(Button({ key: 'remove', label: 'Remove', hotkey: 'r', plain: true, onPress: () => removeAgent($, key) }))
   actions.push(Button({ key: 'close', label: 'Close', hotkey: 'c', plain: true, onPress: () => $.ui.close({ id: e.requestId }) }))
   parts.push(Box({ flexDirection: 'row', columnGap: 2, children: actions }))
@@ -1524,7 +1643,7 @@ export function register(on) {
     try {
       await $.tool.register({
         name: STATUS_TOOL,
-        description: 'List the agents the user spawned in the swarm pane: name, transport, status, current activity, token use, anything waiting on the user, and the last answer. Use it before coordinating with or messaging swarm agents.',
+        description: 'List the swarm agents: the ones the user spawned in the swarm pane and every other subagent or teammate spawned in this session: name, transport, status, current activity, token use, anything waiting on the user, and the last answer. Use it before coordinating with or messaging swarm agents.',
         inputSchema: { type: 'object', properties: {} },
       })
     } catch (err) {
@@ -1600,6 +1719,22 @@ export function register(on) {
     return {}
   })
 
+  // Every subagent or teammate spawned in this session joins the swarm, whoever spawned it
+  on('agent.spawn', async ($, e, next) => {
+    const r = await next(e)
+    if (next.origin.plugin === 'swarm-mod' || e.workflow || !r || r.deny || !r.agentId) return r
+    try {
+      const key = adopt({
+        agentId: r.agentId, name: e.name, description: e.description, type: e.subagentType, model: e.model,
+        resolvedModel: r.model, prompt: e.prompt, teammateId: r.teammateId, parentAgentId: e.parentAgentId,
+      }, await $.clock.now())
+      if (key) changed($)
+    } catch (err) {
+      $.ui.log('swarm: could not track ' + (e.description || 'a subagent') + ': ' + (err && err.message), { to: 'debug' })
+    }
+    return r
+  })
+
   on('agent.offer', async ($, e, next) => {
     agentTypes[e.agent] = e.description
     return next(e)
@@ -1631,7 +1766,7 @@ export function register(on) {
         if (f && !w.files.includes(f)) w.files = [...w.files, f].slice(-200)
       }
     }
-    if (e.tool === 'AskUserQuestion' && (key || (workerSide && !e.agentId))) {
+    if (e.tool === 'AskUserQuestion' && ((key && !agents[key].adopted) || (workerSide && !e.agentId))) {
       const result = await holdQuestion($, key, e, next.signal)
       if (result) {
         if (e.tool_use_id) delete callInfo[e.tool_use_id]
@@ -1672,7 +1807,8 @@ export function register(on) {
             : 'This swarm agent runs in dont-ask mode: anything not pre-approved is denied. Continue without it or ask the lead.',
         }
       }
-      if (decision !== 'ask' || mode === 'auto') return r
+      // an adopted subagent keeps Claude Code's own prompt
+      if (decision !== 'ask' || mode === 'auto' || (agents[key] && agents[key].adopted)) return r
     } else {
       // worker: only hold when a person would be asked
       if (decision !== 'ask' || !worker || ['auto', 'bypassPermissions', 'dontAsk'].includes(worker.approval)) return r
