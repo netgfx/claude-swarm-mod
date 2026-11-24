@@ -4,7 +4,7 @@ import {
   lastRosterKey, rosterEntry, restartTask, PALETTE,
 } from '../hooks/lib.js'
 
-type Opts = { os?: 'windows' | 'mac'; store?: Record<string, unknown>; env?: Record<string, string> }
+type Opts = { os?: 'windows' | 'mac'; store?: Record<string, unknown>; env?: Record<string, string>; ask?: string; oldStore?: Record<string, unknown> }
 
 // Stubs for kill / restart / roster flows. `seen.list` is what $.agent.list() answers.
 function setup(on: any, opts: Opts = {}) {
@@ -17,6 +17,8 @@ function setup(on: any, opts: Opts = {}) {
     runs: [] as string[][],
     stops: [] as any[],
     toasts: [] as string[],
+    asks: [] as any[],
+    reads: [] as string[],
     list: [] as any[],
     pidName: 'claude',
     store: new Map<string, unknown>(Object.entries(opts.store ?? {})),
@@ -38,8 +40,18 @@ function setup(on: any, opts: Opts = {}) {
   for (const name of ['command.register', 'tool.register', 'ui.close', 'ui.status', 'ui.log']) on(name, () => ({ value: undefined }))
   on('ui.toast', ($: any, e: any) => { seen.toasts.push(e.text); return { value: undefined } })
   on('ui.open', ($: any, e: any) => { seen.opened.push(e.id); return { value: { isPlaced: true } } })
-  on('fs.list', () => ({ deny: 'missing' }))
-  on('fs.read', () => ({ deny: 'missing' }))
+  // Claude Code's plugin store folder, holding swarm-mod's store file when opts.oldStore is set
+  on('fs.list', ($: any, e: any) => (opts.oldStore && /[\\/]plugins[\\/]store$/.test(e.path)
+    ? { value: [
+      { name: 'other-mod_x-111111111111.json', kind: 'file', size: 2, isLink: false },
+      { name: 'swarm-mod_claude-swarm-mod-222222222222.json', kind: 'file', size: 2, isLink: false },
+    ] }
+    : { deny: 'missing' }))
+  on('fs.read', ($: any, e: any) => {
+    seen.reads.push(e.path)
+    if (opts.oldStore && /[\\/]plugins[\\/]store[\\/]swarm-mod_claude-swarm-mod-222222222222\.json$/.test(e.path)) return { value: JSON.stringify(opts.oldStore) }
+    return { deny: 'missing' }
+  })
   on('fs.write', ($: any, e: any) => { seen.writes.push({ path: e.path, text: e.text }); return { value: undefined } })
   on('process.run', ($: any, e: any) => {
     seen.runs.push([...e.argv])
@@ -62,7 +74,14 @@ function setup(on: any, opts: Opts = {}) {
   })
   on('agent.list', () => ({ value: seen.list.map((x) => ({ ...x })) }))
   on('session.send', () => ({ isDelivered: true }))
+  // Claude Code's own permission decision: TaskStop and the mod's own questions need none
+  on('tool.check', () => ({ decision: 'allow' }))
   on('tool.call', ($: any, e: any) => {
+    if (e.tool === 'AskUserQuestion') {
+      // $.ui.ask reaches Claude Code as an AskUserQuestion call
+      seen.asks.push(e.questions[0])
+      return opts.ask ? { result: { answers: { [e.questions[0].question]: opts.ask } } } : { deny: 'dismissed' }
+    }
     if (e.tool === 'TaskStop') {
       seen.stops.push(e)
       for (const x of seen.list) if (x.teammateId === e.task_id || x.name === e.task_id) x.status = 'killed'
@@ -376,4 +395,118 @@ test('new panes are valid in the terminal and on Desktop', async ($, on) => {
     }
   }
   expect(seen.opened).toContain('swarm-rosters')
+})
+
+// ---------------- "Bypass all checks" in rosters ----------------
+
+const bypassRoster = { cwd: 'C:\\work', savedAt: 1, agents: [
+  { name: 'rook', color: PALETTE[3].hex, agentType: 'default', model: 'inherit', effort: 'default', approval: 'bypassPermissions', transport: 'session', task: 'build', autoRestart: false },
+] }
+
+test('without allowBypass, a roster agent saved with "Bypass all checks" launches as "Ask me"', async ($, on) => {
+  const { seen } = setup(on, { store: { 'roster:yolo': bypassRoster } })
+  await start($)
+  await $.command.run({ command: 'swarm', args: 'load yolo' })
+  expect(seen.asks).toEqual([])
+  const script = seen.writes.find((w) => /\.ps1$/.test(w.path))!
+  expect(script.text).not.toContain('--dangerously-skip-permissions')
+  expect(script.text).toContain("$env:SWARM_MOD_APPROVAL = 'default'")
+  expect(seen.toasts.some((t) => /rook: "Bypass all checks" is turned off \(allowBypass\), so it runs as "Ask me"/.test(t))).toBe(true)
+})
+
+test('with allowBypass, launching a bypass roster asks first, naming the folder', { options: { allowBypass: true } }, async ($, on) => {
+  const { seen } = setup(on, { store: { 'roster:yolo': bypassRoster }, ask: 'Turn checks off' })
+  await start($)
+  await $.command.run({ command: 'swarm', args: 'load yolo' })
+  expect(seen.asks.length).toBe(1)
+  expect(seen.asks[0].question).toBe('Run rook with every permission check off (Bypass all checks) in C:\\work?')
+  expect(seen.asks[0].options.map((o: any) => o.label)).toEqual(['Turn checks off', 'Use Ask me', 'Cancel'])
+  const script = seen.writes.find((w) => /\.ps1$/.test(w.path))!
+  expect(script.text).toContain("'--dangerously-skip-permissions'")
+})
+
+test('with allowBypass, "Use Ask me" launches the roster without bypass', { options: { allowBypass: true } }, async ($, on) => {
+  const { seen } = setup(on, { store: { 'roster:yolo': bypassRoster }, ask: 'Use Ask me' })
+  await start($)
+  await $.command.run({ command: 'swarm', args: 'load yolo' })
+  const script = seen.writes.find((w) => /\.ps1$/.test(w.path))!
+  expect(script.text).not.toContain('--dangerously-skip-permissions')
+})
+
+test('with allowBypass, dismissing the question launches nothing', { options: { allowBypass: true } }, async ($, on) => {
+  const { seen } = setup(on, { store: { 'roster:yolo': bypassRoster } })
+  await start($)
+  await $.command.run({ command: 'swarm', args: 'load yolo' })
+  expect(seen.asks.length).toBe(1)
+  expect(seen.writes.some((w) => /\.ps1$/.test(w.path))).toBe(false)
+  expect(seen.spawns.length).toBe(0)
+  expect(seen.toasts).toContain('Not launched: "yolo"')
+})
+
+// ---------------- renamed from swarm-mod ----------------
+
+for (const os of ['windows', 'mac'] as const) {
+  test('saved rosters are copied once from the swarm-mod store (' + os + ')', async ($, on) => {
+    const old = {
+      'roster:old team': { cwd: '/w', savedAt: 3, agents: [{ name: 'scout', transport: 'teammate' }] },
+      'roster:mine': { cwd: '/w', savedAt: 1, agents: [{ name: 'stale', transport: 'teammate' }] },
+      'last:c:/work': { cwd: 'C:\\work', savedAt: 2, agents: [{ name: 'forge', transport: 'teammate' }] },
+      band: 'off',
+      'w:k1': { status: 'working' },
+      'r:k1': { decisions: {} },
+    }
+    const mine = { cwd: '/w', savedAt: 9, agents: [{ name: 'keep', transport: 'teammate' }] }
+    const { seen } = setup(on, { os, oldStore: old, store: { 'roster:mine': mine } })
+    await start($, os)
+    expect(seen.store.get('roster:old team')).toEqual(old['roster:old team'])
+    expect(seen.store.get('last:c:/work')).toEqual(old['last:c:/work'])
+    expect(seen.store.get('band')).toBe('off')
+    // what is already here wins, and worker traffic stays behind
+    expect(seen.store.get('roster:mine')).toEqual(mine)
+    expect(seen.store.has('w:k1')).toBe(false)
+    expect(seen.store.has('r:k1')).toBe(false)
+    // only swarm-mod's own file is read, from Claude Code's plugin store folder (fs stubs
+    // see host-absolute paths, so compare the tail)
+    const storeReads = seen.reads.filter((p) => /plugins[\\/]store/.test(p))
+    expect(storeReads.length).toBe(1)
+    expect(storeReads[0]).toMatch(/[\\/]Users[\\/]me[\\/]\.claude[\\/]plugins[\\/]store[\\/]swarm-mod_claude-swarm-mod-222222222222\.json$/)
+    expect(seen.store.get('migrated:swarm-mod')).toBe(true)
+    // the next session does not copy again
+    seen.store.delete('roster:old team')
+    await start($, os)
+    expect(seen.store.has('roster:old team')).toBe(false)
+  })
+}
+
+test('the swarm-mod store is found under CLAUDE_CONFIG_DIR when it is set', async ($, on) => {
+  const old = { 'roster:cfg': { cwd: '/w', savedAt: 1, agents: [{ name: 'x', transport: 'teammate' }] } }
+  const { seen } = setup(on, { os: 'mac', oldStore: old, env: { CLAUDE_CONFIG_DIR: '/opt/claude-cfg' } })
+  await start($, 'mac')
+  expect(seen.store.has('roster:cfg')).toBe(true)
+  expect(seen.reads.some((p) => /[\\/]opt[\\/]claude-cfg[\\/]plugins[\\/]store[\\/]swarm-mod_/.test(p))).toBe(true)
+})
+
+test('a worker session never copies the old store', async ($, on) => {
+  const { seen } = setup(on, { oldStore: { 'roster:x': { agents: [] } }, env: { SWARM_MOD_WORKER: 'k9', SWARM_MOD_NAME: 'rook' } })
+  await start($)
+  expect(seen.store.has('roster:x')).toBe(false)
+  expect(seen.store.has('migrated:swarm-mod')).toBe(false)
+})
+
+test('worker reports of agents no longer in the swarm are deleted after a week of silence', async ($, on) => {
+  const day = 24 * 60 * 60 * 1000
+  const { seen } = setup(on, { store: {
+    'w:old': { status: 'idle', heartbeat: 1_000_000 - 8 * day, log: [{ t: 0, text: 'secret prompt' }] },
+    'r:old': { decisions: {} },
+    'w:recent': { status: 'working', heartbeat: 1_000_000 - day },
+    'r:recent': { decisions: {} },
+    'roster:keep': { agents: [] },
+  } })
+  await start($)
+  expect(seen.store.has('w:old')).toBe(false)
+  expect(seen.store.has('r:old')).toBe(false)
+  // another lead's live worker, and saved rosters, stay
+  expect(seen.store.has('w:recent')).toBe(true)
+  expect(seen.store.has('r:recent')).toBe(true)
+  expect(seen.store.has('roster:keep')).toBe(true)
 })

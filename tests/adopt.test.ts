@@ -10,6 +10,7 @@ function setup(on: any, opts: { coreCheck?: 'allow' | 'ask' } = {}) {
     sends: [] as any[],
     toasts: [] as string[],
     list: [] as any[],
+    ran: [] as string[],
     store: new Map<string, unknown>(),
   }
   on('session.start', () => ({ cwd: 'C:\\work' }))
@@ -38,9 +39,12 @@ function setup(on: any, opts: { coreCheck?: 'allow' | 'ask' } = {}) {
   on('turn.step', async function* ($: any, e: any) {
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: { input_tokens: 1000, output_tokens: 500, cache_read_input_tokens: 2000, cache_creation_input_tokens: 0, model: 'm' } }
   })
-  on('tool.check', () => ({ decision: opts.coreCheck ?? 'ask' }))
+  // Claude Code's own permission decision, which the kit's $.tool.call asks before the
+  // tool runs. TaskStop needs no permission in Claude Code.
+  on('tool.check', ($: any, e: any) => ({ decision: e.tool === 'TaskStop' ? 'allow' : opts.coreCheck ?? 'ask' }))
   on('tool.call', ($: any, e: any) => {
     if (e.tool === 'TaskStop') seen.stops.push(e)
+    seen.ran.push(e.tool)
     return { result: 'ran' }
   })
   on('turn.complete', () => ({ text: '' }))
@@ -134,13 +138,17 @@ test("the swarm's own spawns are not adopted twice", async ($, on) => {
 })
 
 test("an adopted subagent keeps Claude Code's own permission prompt", async ($, on) => {
-  setup(on, { coreCheck: 'ask' })
+  const { seen } = setup(on, { coreCheck: 'ask' })
   await start($)
   await modelSpawns($, 'Game UI / HUD / cards')
-  const p = $.tool.call({ tool: 'Edit', tool_use_id: 'u7', agentId: 'A1', file_path: 'C:\\work\\a.ts', old_string: 'a', new_string: 'b' })
-  const check: any = await $.tool.check({ tool: 'Edit', input: {}, tool_use_id: 'u7' } as any)
-  expect(check.decision).toBe('ask')
-  await p
+  // the kit's $.tool.call runs the permission check inside the call, as a session does.
+  // The swarm holds nothing in its pane and leaves Claude Code's "ask" as it is; with no
+  // one to answer the prompt in a test, Claude Code then refuses the call itself.
+  const r: any = await $.tool.call({ tool: 'Edit', tool_use_id: 'u7', agentId: 'A1', file_path: 'C:\\work\\a.ts', old_string: 'a', new_string: 'b' } as any)
+  expect(r.isError).toBe(true)
+  expect(r.text).not.toMatch(/swarm/)
+  expect(seen.ran).toEqual([])
+  expect(seen.toasts.some((t) => /needs approval/.test(t))).toBe(false)
 })
 
 test('an adopted subagent is renamed and edited, then saved in a roster', async ($, on) => {

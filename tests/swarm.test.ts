@@ -1,5 +1,5 @@
 import { expect, test, mock } from 'claude-code/testing'
-import { pickColor, PALETTE, decide, claudeArgs, launchScript, launchCandidates, focusArgv, findConflicts, validateName, suggestName, MODELS, modelAlias } from '../hooks/lib.js'
+import { pickColor, PALETTE, decide, claudeArgs, launchScript, launchCandidates, focusArgv, findConflicts, validateName, suggestName, MODELS, modelAlias, approvalOptions, effectiveApproval } from '../hooks/lib.js'
 
 type Opts = { os?: 'windows' | 'mac'; env?: Record<string, string>; coreCheck?: 'allow' | 'ask' | 'deny'; ttyFile?: string; spawnDeny?: string }
 
@@ -15,6 +15,7 @@ function setup(on: any, opts: Opts = {}) {
     sends: [] as any[],
     toasts: [] as string[],
     copies: [] as string[],
+    ran: [] as string[],
     store: new Map<string, unknown>(),
   }
   on('session.start', () => ({ cwd: os === 'windows' ? 'C:\\work' : '/work' }))
@@ -28,6 +29,7 @@ function setup(on: any, opts: Opts = {}) {
   on('store.get', ($: any, e: any) => ({ value: seen.store.get(e.key) }))
   on('store.set', ($: any, e: any) => { seen.store.set(e.key, e.value); return { value: undefined } })
   on('store.delete', ($: any, e: any) => { seen.store.delete(e.key); return { value: undefined } })
+  on('store.keys', () => ({ value: [...seen.store.keys()] }))
   const clock = mock.clock(on, { now: 1_000_000 })
   for (const name of ['command.register', 'tool.register', 'ui.close', 'ui.status', 'ui.log']) on(name, () => ({ value: undefined }))
   on('ui.copy', ($: any, e: any) => { seen.copies.push(e.text); return { value: { isCopied: true } } })
@@ -51,14 +53,15 @@ function setup(on: any, opts: Opts = {}) {
     seen.steps.push(e)
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: { input_tokens: 1000, output_tokens: 500, cache_read_input_tokens: 2000, cache_creation_input_tokens: 0, model: 'm' } }
   })
+  // Claude Code's own permission decision. The kit's $.tool.call runs it inside the call,
+  // after the tool.call hooks and before the tool, as a session does.
   on('tool.check', () => ({ decision: opts.coreCheck ?? 'ask' }))
-  // acts as core for tool.call: holds the call until the test releases it
-  const held: { release?: (v: any) => void } = {}
-  on('tool.call', () => new Promise((r) => { held.release = r }))
+  // the tool itself: records that it ran
+  on('tool.call', ($: any, e: any) => { seen.ran.push(e.tool); return { result: 'ran' } })
   on('turn.start', ($: any, e: any) => ({ turnId: e.turnId }))
   on('turn.complete', () => ({ text: '' }))
   on('ui.render', () => ({ type: 'Text', props: {}, children: ['drawn by Claude Code'] }))
-  return { seen, clock, held }
+  return { seen, clock }
 }
 
 const pane = (requestId: string, surface: 'terminal' | 'desktop' = 'terminal') => ({
@@ -77,13 +80,18 @@ async function start($: any, os: 'windows' | 'mac' = 'windows') {
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: os === 'windows' ? 'C:\\work' : '/work' })
 }
 
-// Starts a tool call, runs the permission check while core holds it, then lets it finish
-async function callWithCheck($: any, held: any, call: any) {
-  held.release = undefined
-  const p = $.tool.call(call)
-  for (let i = 0; i < 100 && !held.release; i++) await Promise.resolve()
-  const check = $.tool.check({ tool: call.tool, input: call, tool_use_id: call.tool_use_id })
-  return { p, check }
+// Opens the agent panel from the band's "needs you" button once the hold shows there
+async function openHeld($: any, seen: any) {
+  for (let i = 0; i < 50; i++) {
+    const b = await $.ui.mount(band())
+    const attn = await b.find({ type: 'Button', key: 'band-attn' } as any)
+    if (attn) await b.press({ key: 'band-attn' })
+    await b.unmount()
+    const id = seen.opened.find((x: string) => x.startsWith('swarm-a-'))
+    if (attn && id) return id as string
+    await new Promise((r) => setTimeout(r, 2))
+  }
+  return ''
 }
 
 // Fills in the wizard and spawns; returns the wizard mount for further checks
@@ -97,6 +105,8 @@ async function spawnVia($: any, fill: Record<string, string> = {}) {
   if (fill.name) await ui.input({ key: 'w-name', text: fill.name })
   if (fill.task) await ui.input({ key: 'w-task', text: fill.task })
   await ui.press({ key: 'w-spawn' })
+  // "Bypass all checks" asks for a second press that confirms it
+  if (fill.approval === 'bypassPermissions' && (await ui.find({ type: 'Button', text: /^Confirm: spawn/ } as any))) await ui.press({ key: 'w-spawn' })
   await ui.unmount()
 }
 
@@ -240,52 +250,154 @@ test('effort is applied per agent and tokens are counted', async ($, on) => {
   expect(await ui.find({ type: 'Text', text: /3\.5k tok/ })).toBeDefined()
 })
 
-test('accept-edits teammates get edits approved; plan teammates are read-only', async ($, on) => {
-  const { held } = setup(on, { coreCheck: 'ask' })
+// Claude Code runs a tool call as: tool.call hooks, then the permission check (tool.check),
+// then the tool. The test kit's $.tool.call does the same (2.1.331 and later), so these
+// tests fire the call and read its outcome: the tool ran, or the call was denied.
+
+test('accept-edits teammates get edits approved where Claude Code would ask', async ($, on) => {
+  const { seen } = setup(on, { coreCheck: 'ask' })
   await start($)
   await spawnVia($, { approval: 'acceptEdits', task: 'go' })
-  const { p, check } = await callWithCheck($, held, { tool: 'Edit', tool_use_id: 'u1', agentId: 'A1', file_path: 'C:\\work\\a.ts', old_string: 'a', new_string: 'b' })
-  expect((await check).decision).toBe('allow')
-  held.release!({ result: 'ran' })
-  await p
+  const out: any = await $.tool.call({ tool: 'Edit', tool_use_id: 'u1', agentId: 'A1', file_path: 'C:\\work\\a.ts', old_string: 'a', new_string: 'b' } as any)
+  expect(out.result).toBe('ran')
+  expect(seen.ran).toEqual(['Edit'])
+  // nothing was held in the pane
+  expect(seen.toasts.some((t) => /needs approval/.test(t))).toBe(false)
 })
 
-test('plan-mode teammates cannot edit', async ($, on) => {
-  const { held } = setup(on, { coreCheck: 'allow' })
+test('plan-mode teammates cannot edit, but can read', async ($, on) => {
+  const { seen } = setup(on, { coreCheck: 'allow' })
   await start($)
   await spawnVia($, { approval: 'plan', task: 'go' })
-  const { p, check } = await callWithCheck($, held, { tool: 'Write', tool_use_id: 'u2', agentId: 'A1', file_path: 'C:\\work\\a.ts', content: 'x' })
-  const c: any = await check
-  expect(c.decision).toBe('deny')
-  expect(c.reason).toMatch(/read-only/)
-  held.release!({ deny: c.reason })
-  await p
+  const write: any = await $.tool.call({ tool: 'Write', tool_use_id: 'u2', agentId: 'A1', file_path: 'C:\\work\\a.ts', content: 'x' } as any)
+  expect(write.isError).toBe(true)
+  expect(write.text).toMatch(/denied by plugin powermods-swarm: This swarm agent runs in plan\/read-only mode/)
+  expect(seen.ran).toEqual([])
+  const read: any = await $.tool.call({ tool: 'Read', tool_use_id: 'u2b', agentId: 'A1', file_path: 'C:\\work\\a.ts' } as any)
+  expect(read.result).toBe('ran')
+  expect(seen.ran).toEqual(['Read'])
+})
+
+test('a call from outside the swarm is left to Claude Code', async ($, on) => {
+  const { seen } = setup(on, { coreCheck: 'allow' })
+  await start($)
+  await spawnVia($, { approval: 'plan', task: 'go' })
+  // the main conversation's own call has no agentId, so a swarm agent's plan mode does not apply
+  const out: any = await $.tool.call({ tool: 'Write', tool_use_id: 'u2c', file_path: 'C:\\work\\a.ts', content: 'x' } as any)
+  expect(out.result).toBe('ran')
+  expect(seen.ran).toEqual(['Write'])
 })
 
 test('an approval waits for the swarm pane and the pane approves it', async ($, on) => {
-  const { seen, held } = setup(on, { coreCheck: 'ask' })
+  const { seen } = setup(on, { coreCheck: 'ask' })
   await start($)
   await spawnVia($, { task: 'go' })
-  const { p, check: pending } = await callWithCheck($, held, { tool: 'Bash', tool_use_id: 'u3', agentId: 'A1', command: 'npm test' })
-  // wait until the hold is visible in the band, then open it from there
-  let attn: any
-  for (let i = 0; i < 50 && !attn; i++) {
-    const b = await $.ui.mount(band())
-    attn = await b.find({ type: 'Button', key: 'band-attn' } as any)
-    if (attn) await b.press({ key: 'band-attn' })
-    await b.unmount()
-  }
-  expect(attn).toBeDefined()
+  const call = $.tool.call({ tool: 'Bash', tool_use_id: 'u3', agentId: 'A1', command: 'npm test' } as any)
+  const detailId = await openHeld($, seen)
+  expect(detailId).toMatch(/^swarm-a-/)
   expect(seen.toasts.some((t) => /needs approval/.test(t))).toBe(true)
-  const detailId = seen.opened.find((id) => id.startsWith('swarm-a-'))!
+  // held: the tool has not run yet
+  expect(seen.ran).toEqual([])
   const ui = await $.ui.mount(pane(detailId))
   expect(await ui.find({ type: 'Text', text: 'npm test' })).toBeDefined()
   await ui.press({ key: 'ap-allow' })
-  const r: any = await pending
-  expect(r.decision).toBe('allow')
-  expect(r.reason).toMatch(/Approved by the user/)
-  held.release!({ result: 'ran' })
-  await p
+  const r: any = await call
+  expect(r.result).toBe('ran')
+  expect(seen.ran).toEqual(['Bash'])
+})
+
+test('a call denied in the swarm pane does not run, and Claude reads why', async ($, on) => {
+  const { seen } = setup(on, { coreCheck: 'ask' })
+  await start($)
+  await spawnVia($, { task: 'go' })
+  const call = $.tool.call({ tool: 'Bash', tool_use_id: 'u3d', agentId: 'A1', command: 'rm -rf build' } as any)
+  const ui = await $.ui.mount(pane(await openHeld($, seen)))
+  await ui.press({ key: 'ap-deny' })
+  const r: any = await call
+  expect(r.isError).toBe(true)
+  expect(r.text).toMatch(/The user denied this in the swarm pane/)
+  expect(seen.ran).toEqual([])
+})
+
+test('a deny from Claude Code is never turned into an approval', async ($, on) => {
+  const { seen } = setup(on, { coreCheck: 'deny' })
+  await start($)
+  await spawnVia($, { approval: 'acceptEdits', task: 'go' })
+  const r: any = await $.tool.call({ tool: 'Edit', tool_use_id: 'u3e', agentId: 'A1', file_path: 'C:\\work\\a.ts', old_string: 'a', new_string: 'b' } as any)
+  expect(r.isError).toBe(true)
+  expect(seen.ran).toEqual([])
+  expect(seen.toasts.some((t) => /needs approval/.test(t))).toBe(false)
+})
+
+// ---------------- "Bypass all checks" is opt-in ----------------
+
+test('"Bypass all checks" is not offered, and not applied, without the allowBypass option', async ($, on) => {
+  expect(approvalOptions(false).map((o) => o.value)).not.toContain('bypassPermissions')
+  expect(approvalOptions(true).map((o) => o.value)).toContain('bypassPermissions')
+  expect(effectiveApproval({ approval: 'bypassPermissions', bypassConfirmed: true }, false)).toBe('default')
+  expect(effectiveApproval({ approval: 'bypassPermissions' }, true)).toBe('default')
+  expect(effectiveApproval({ approval: 'bypassPermissions', bypassConfirmed: true }, true)).toBe('bypassPermissions')
+  expect(effectiveApproval({ approval: 'plan' }, false)).toBe('plan')
+
+  setup(on)
+  await start($)
+  await $.command.run({ command: 'swarm', args: 'spawn' })
+  const ui = await $.ui.mount(pane('swarm-spawn'))
+  await ui.press({ key: 'w-approval' })
+  expect(await ui.find({ type: 'Button', key: 'w-approval:acceptEdits' } as any)).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'w-approval:bypassPermissions' } as any)).toBeUndefined()
+})
+
+test('with allowBypass, a bypass worker needs a second press that names the folder', { options: { allowBypass: true } }, async ($, on) => {
+  const { seen } = setup(on)
+  await start($)
+  await $.command.run({ command: 'swarm', args: 'spawn' })
+  const ui = await $.ui.mount(pane('swarm-spawn'))
+  await ui.press({ key: 'w-mode' })
+  await ui.press({ key: 'w-mode:session' })
+  await ui.press({ key: 'w-approval' })
+  await ui.press({ key: 'w-approval:bypassPermissions' })
+  await ui.input({ key: 'w-name', text: 'rook' })
+  // the first press only arms it
+  await ui.press({ key: 'w-spawn' })
+  expect(seen.writes.some((w) => /\.ps1$/.test(w.path))).toBe(false)
+  expect(await ui.find({ type: 'Text', text: /rook runs with every permission check off \(claude --dangerously-skip-permissions\) in C:\\work\. Press Spawn again to confirm\./ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: 'Confirm: spawn with all checks off' } as any)).toBeDefined()
+  await ui.press({ key: 'w-spawn' })
+  const script = seen.writes.find((w) => /\.ps1$/.test(w.path))!
+  expect(script.text).toContain("'--dangerously-skip-permissions'")
+  expect(script.text).toContain("$env:SWARM_MOD_APPROVAL = 'bypassPermissions'")
+})
+
+test('a bypass teammate has asks approved only once confirmed', { options: { allowBypass: true } }, async ($, on) => {
+  const { seen } = setup(on, { coreCheck: 'ask' })
+  await start($)
+  await spawnVia($, { approval: 'bypassPermissions', task: 'go' })
+  const r: any = await $.tool.call({ tool: 'Bash', tool_use_id: 'u5', agentId: 'A1', command: 'npm test' } as any)
+  expect(r.result).toBe('ran')
+  expect(seen.ran).toEqual(['Bash'])
+})
+
+// ---------------- messages from the lead ----------------
+
+test('with workersAcceptMessages, a worker starts with crossSessionInbound accept', { options: { workersAcceptMessages: true } }, async ($, on) => {
+  const { seen } = setup(on)
+  await start($)
+  await spawnVia($, { mode: 'session', name: 'rook' })
+  const settings = seen.writes.find((w) => /[\\/]swarm-mod[\\/]launch[\\/]worker-settings\.json$/.test(w.path))!
+  expect(JSON.parse(settings.text)).toEqual({ crossSessionInbound: 'accept' })
+  const script = seen.writes.find((w) => /\.ps1$/.test(w.path))!
+  expect(script.text).toMatch(/'--settings' '[^']*worker-settings\.json'/)
+})
+
+test('without workersAcceptMessages, the spawn form says how messages reach a worker', async ($, on) => {
+  setup(on)
+  await start($)
+  await $.command.run({ command: 'swarm', args: 'spawn' })
+  const ui = await $.ui.mount(pane('swarm-spawn'))
+  await ui.press({ key: 'w-mode' })
+  await ui.press({ key: 'w-mode:session' })
+  expect(await ui.find({ type: 'Text', text: /crossSessionInbound/ })).toBeDefined()
 })
 
 test('a teammate question is answered from the pane', async ($, on) => {
@@ -317,7 +429,9 @@ for (const os of ['windows', 'mac'] as const) {
     expect(script).toBeDefined()
     expect(script.text).toContain("'--effort' 'high'")
     expect(script.text).toContain(os === 'windows' ? "$env:SWARM_MOD_TASK = 'hello'" : "export SWARM_MOD_TASK='hello'")
-    expect(seen.writes.some((w) => /worker-settings\.json$/.test(w.path) && /crossSessionInbound/.test(w.text))).toBe(true)
+    // workers keep their own inbound-message setting unless the user opted in
+    expect(seen.writes.some((w) => /worker-settings\.json$/.test(w.path))).toBe(false)
+    expect(script.text).not.toContain('--settings')
     expect(script.text).toContain(os === 'windows' ? "Set-Location -LiteralPath 'C:\\work'" : "cd '/work'")
     const launch = seen.runs.find((r) => r[0] === (os === 'windows' ? 'wt.exe' : 'open'))
     expect(launch).toBeDefined()
