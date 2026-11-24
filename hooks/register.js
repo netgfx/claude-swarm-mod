@@ -1685,6 +1685,26 @@ function renderRosters($, e) {
   return Box({ flexDirection: 'column', children: rows })
 }
 
+// ======================= hook error handlers =======================
+
+// A hook of this mod that throws or times out never blocks anything: the event goes on
+// as if the mod were not there (next(e) returns the earlier result when the hook had
+// already called next).
+function failOpen($, e, next) {
+  return next(e)
+}
+
+// tool.check fails open too, except for a swarm agent in plan or dont-ask mode: those
+// modes are restrictions the user chose, so a failed check denies instead.
+function checkFailed($, e, next) {
+  const info = e && e.tool_use_id ? callInfo[e.tool_use_id] : null
+  const mode = info && info.key && agents[info.key] ? agents[info.key].approval : ''
+  if (mode === 'plan' || mode === 'dontAsk') {
+    return { decision: 'deny', reason: 'The swarm could not check this call for an agent in ' + mode + ' mode, so it was denied. Ask the lead how to proceed.' }
+  }
+  return next(e)
+}
+
 // ======================= register =======================
 
 export function register(on, options) {
@@ -1750,7 +1770,7 @@ export function register(on, options) {
   on('classic.SessionStart', { source: ['clear', 'resume', 'fork'] }, async ($, e, next) => {
     snapshotDirty = true
     return next(e)
-  })
+  }).catch(failOpen)
 
   on('session.end', async ($, e, next) => {
     if (worker && w && w.status !== 'killed') {
@@ -1826,14 +1846,14 @@ export function register(on, options) {
       $.ui.log('swarm: could not track ' + (e.description || 'a subagent') + ': ' + (err && err.message), { to: 'debug' })
     }
     return r
-  })
+  }).catch(failOpen)
 
   on('agent.offer', async ($, e, next) => {
     agentTypes[e.agent] = e.description
     return next(e)
-  })
+  }).catch(failOpen)
 
-  on('tool.call', { tool: 'mcp__powermods-swarm__swarm_status' }, async () => ({ result: statusText() }))
+  on('tool.call', { tool: 'mcp__powermods-swarm__swarm_status' }, async () => ({ result: statusText() })).catch(failOpen)
 
   // Activity, files, and questions of swarm teammates (and of this session when it is a worker)
   on('tool.call', async ($, e, next) => {
@@ -1879,7 +1899,7 @@ export function register(on, options) {
         wDirty = true
       }
     }
-  })
+  }).catch(failOpen)
 
   // Approval modes for teammates; approvals routed to the swarm pane
   on('tool.check', async ($, e, next) => {
@@ -1917,7 +1937,7 @@ export function register(on, options) {
     if (d && d.decision === 'allow') return { decision: 'allow', reason: 'Approved by the user in the swarm pane' }
     if (d && d.decision === 'deny') return { decision: 'deny', reason: 'The user denied this in the swarm pane. Do not retry it; ask how to proceed.' }
     return r
-  })
+  }).catch(checkFailed)
 
   // Per-agent effort, and token accounting
   on('turn.step', async function* ($, e, next) {
@@ -1991,7 +2011,7 @@ export function register(on, options) {
       }
     }
     return next(e)
-  })
+  }).catch(failOpen)
 
   on('ui.render', { component: 'Pane' }, async ($, e, next) => {
     if (e.requestId === MAIN) return renderMain($, e)
