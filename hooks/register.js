@@ -33,6 +33,7 @@ const WORKER_HOLD_MS = 3 * 60 * 1000 // then the worker's own prompt
 const STALE_MS = 20000
 const LAUNCH_TIMEOUT_MS = 90000
 const LOG_MAX = 40
+const REPORT_KEEP_MS = 7 * 24 * 60 * 60 * 1000 // a worker report silent this long is deleted
 const NAMES = ['scout', 'forge', 'atlas', 'echo', 'nova', 'pixel', 'rook', 'sage', 'vega', 'zephyr', 'orion', 'quill']
 
 // userConfig: both off unless the user turns them on (see plugin.json)
@@ -1685,6 +1686,31 @@ function renderRosters($, e) {
   return Box({ flexDirection: 'column', children: rows })
 }
 
+// Worker reports (w:<id>) and the lead's replies (r:<id>) of agents no longer in this
+// swarm are deleted once the worker has been silent for a week, so a swarm that was never
+// cleared does not leave its logs in the store for good.
+async function pruneReports($) {
+  let keys = []
+  try {
+    keys = await $.store.keys()
+  } catch {
+    return
+  }
+  const now = await $.clock.now()
+  for (const k of keys) {
+    if (!k.startsWith('w:') || agents[k.slice(2)]) continue
+    let rep = null
+    try {
+      rep = await $.store.get(k)
+    } catch {}
+    if (rep && rep.heartbeat && now - rep.heartbeat < REPORT_KEEP_MS) continue
+    try {
+      await $.store.delete(k)
+      await $.store.delete('r:' + k.slice(2))
+    } catch {}
+  }
+}
+
 // ======================= hook error handlers =======================
 
 // A hook of this mod that throws or times out never blocks anything: the event goes on
@@ -1703,6 +1729,54 @@ function checkFailed($, e, next) {
     return { decision: 'deny', reason: 'The swarm could not check this call for an agent in ' + mode + ' mode, so it was denied. Ask the lead how to proceed.' }
   }
   return next(e)
+}
+
+// ======================= renamed from swarm-mod =======================
+
+// Before 0.5.0 this plugin was named swarm-mod, and $.store keeps each plugin's values
+// under its own name. Once, on the first lead session, copy the saved rosters, each
+// workspace's last swarm and the band setting from swarm-mod's store file into this
+// plugin's store, without replacing anything already here. Only files named
+// swarm-mod_*.json in Claude Code's plugin store folder are read. Nothing is deleted.
+async function migrateStore($) {
+  try {
+    if (await $.store.get('migrated:' + OLD_PLUGIN)) return
+    await $.store.set('migrated:' + OLD_PLUGIN, true)
+    let base = ''
+    try {
+      base = String((await $.env.get('CLAUDE_CONFIG_DIR')) || '')
+    } catch {}
+    if (!base && homeDir) base = homeDir + sep() + '.claude'
+    if (!base) return
+    const dir = base.replace(/[\\/]+$/, '') + sep() + 'plugins' + sep() + 'store'
+    let files = []
+    try {
+      files = await $.fs.list(dir)
+    } catch {
+      return
+    }
+    const have = new Set(await $.store.keys())
+    let copied = 0
+    for (const f of files) {
+      if (f.kind === 'directory' || !f.name.startsWith(OLD_PLUGIN + '_') || !/\.json$/i.test(f.name)) continue
+      let old = null
+      try {
+        old = JSON.parse(String(await $.fs.read(dir + sep() + f.name)))
+      } catch {
+        continue
+      }
+      if (!old || typeof old !== 'object') continue
+      for (const [k, v] of Object.entries(old)) {
+        if (have.has(k) || !(k.startsWith('roster:') || k.startsWith('last:') || k === 'band')) continue
+        await $.store.set(k, v)
+        have.add(k)
+        copied++
+      }
+    }
+    if (copied) $.ui.log('swarm: copied ' + copied + ' saved roster' + (copied === 1 ? '' : 's') + ' and settings from swarm-mod', { to: 'debug' })
+  } catch (err) {
+    $.ui.log('swarm: could not copy rosters from swarm-mod: ' + (err && err.message), { to: 'debug' })
+  }
 }
 
 // ======================= register =======================
@@ -1738,6 +1812,10 @@ export function register(on, options) {
       $.ui.log('swarm worker setup failed: ' + (err && err.message), { to: 'debug' })
     }
     await restore($)
+    if (!worker) {
+      await migrateStore($)
+      await pruneReports($)
+    }
     try {
       bandOn = (await $.store.get('band')) !== 'off'
     } catch {}
