@@ -11,7 +11,7 @@
 //    cross-session messaging and answers its approvals through $.store.
 
 import {
-  PALETTE, MODES, MODELS, EFFORTS, APPROVALS, BUILTIN_AGENTS, EDIT_TOOLS,
+  PALETTE, MODES, MODELS, EFFORTS, APPROVALS, BUILTIN_AGENTS, EDIT_TOOLS, BYPASS, approvalOptions, effectiveApproval,
   colorName, pickColor, labelOf, suggestName, adoptedName, validateName, fmtTokens, emptyTokens,
   addUsage, totalTokens, clip, summarizeTool, describeCall, baseName, decide, statusView,
   isLive, launchScript, launchCandidates, WORKER_SETTINGS, focusArgv, parseAgentFile, findConflicts, randomId,
@@ -34,6 +34,9 @@ const STALE_MS = 20000
 const LAUNCH_TIMEOUT_MS = 90000
 const LOG_MAX = 40
 const NAMES = ['scout', 'forge', 'atlas', 'echo', 'nova', 'pixel', 'rook', 'sage', 'vega', 'zephyr', 'orion', 'quill']
+
+// userConfig: both off unless the user turns them on (see plugin.json)
+let opts = { allowBypass: false, workersAcceptMessages: false }
 
 // ---- lead state (module variables; snapshot kept in $.state across reloads) ----
 let agents = {} // key -> agent record
@@ -622,7 +625,11 @@ async function deleteRoster($, name) {
 
 // Spawns every agent of a roster into this workspace, with free names and colors
 async function launchRoster($, entries, label) {
-  const plan = planRoster(entries || [], order.map((k) => agents[k].name), liveColors())
+  const plan = await gateRosterBypass($, planRoster(entries || [], order.map((k) => agents[k].name), liveColors()))
+  if (!plan) {
+    await toast($, 'Not launched' + (label ? ': "' + label + '"' : ''))
+    return 0
+  }
   lastRoster = null
   try {
     await $.ui.open({ id: MAIN, title: 'Swarm' })
@@ -790,7 +797,8 @@ async function openWizard($, editKey) {
   const a = editKey && agents[editKey]
   if (a) {
     draft = {
-      ...draft, editKey, mode: a.transport, agentType: a.agentType, model: a.model, effort: a.effort, approval: a.approval,
+      ...draft, editKey, mode: a.transport, agentType: a.agentType, model: a.model, effort: a.effort,
+      approval: a.approval === BYPASS && !opts.allowBypass ? 'default' : a.approval,
       name: a.name, color: a.color, task: a.task || '', autoRestart: !!a.autoRestart,
     }
     if (a.agentType !== 'default' && !agentTypes[a.agentType] && !BUILTIN_AGENTS.includes(a.agentType)) agentTypes[a.agentType] = ''
@@ -798,6 +806,54 @@ async function openWizard($, editKey) {
   wizardError = ''
   openPick = null
   await $.ui.open({ id: WIZARD, title: a ? 'Edit ' + a.name : 'Spawn agent', focus: true, closeOnEscape: true, rows: 36 })
+}
+
+// "Bypass all checks" in the form: offered only with the allowBypass option, and the
+// first press of Spawn/Save only arms it, showing the folder; the second press confirms.
+// Returns true when the form may go ahead.
+function confirmBypass($, d) {
+  if (d.approval !== BYPASS) return true
+  if (!opts.allowBypass) {
+    wizardError = '"Bypass all checks" is turned off. Turn on the allowBypass option to use it.'
+    $.ui.invalidate('ui.render')
+    return false
+  }
+  if (d.bypassArmed) return true
+  d.bypassArmed = true
+  wizardError = ''
+  $.ui.invalidate('ui.render')
+  return false
+}
+
+// A roster entry or a last swarm that asks for "Bypass all checks": without the
+// allowBypass option it launches as "Ask me"; with it, the user confirms once, in a
+// dialog naming the folder. Returns the entries to launch, or null when cancelled.
+async function gateRosterBypass($, plan) {
+  const wants = plan.filter((e) => e.approval === BYPASS)
+  if (!wants.length) return plan
+  const names = wants.map((e) => e.name).join(', ')
+  if (!opts.allowBypass) {
+    await toast($, names + ': "Bypass all checks" is turned off (allowBypass), so ' + (wants.length === 1 ? 'it runs' : 'they run') + ' as "Ask me"')
+    return plan.map((e) => (e.approval === BYPASS ? { ...e, approval: 'default' } : e))
+  }
+  let cwd = ''
+  try {
+    cwd = await $.session.cwd()
+  } catch {}
+  const OFF = 'Turn checks off'
+  const ASK = 'Use Ask me'
+  let answer = ''
+  try {
+    answer = await $.ui.ask('Run ' + names + ' with every permission check off (Bypass all checks) in ' + (cwd || 'this folder') + '?', {
+      header: 'Bypass',
+      options: [OFF, ASK, 'Cancel'],
+    })
+  } catch {
+    answer = ''
+  }
+  if (answer === OFF) return plan.map((e) => (e.approval === BYPASS ? { ...e, bypassConfirmed: true } : e))
+  if (answer === ASK) return plan.map((e) => (e.approval === BYPASS ? { ...e, approval: 'default' } : e))
+  return null
 }
 
 // Saves the form onto the agent it edits. Name, color, effort and approval mode take
@@ -818,10 +874,11 @@ async function saveEdit($) {
     $.ui.invalidate('ui.render')
     return
   }
+  if (!(a.approval === BYPASS && a.bypassConfirmed && d.approval === BYPASS) && !confirmBypass($, d)) return
   if (name !== a.name) pushLog(a, 'renamed from ' + a.name, await $.clock.now())
   Object.assign(a, {
     name, color: d.color, agentType: d.agentType, model: d.model, effort: d.effort, approval: d.approval,
-    task: d.task || '', autoRestart: !!d.autoRestart,
+    task: d.task || '', autoRestart: !!d.autoRestart, bypassConfirmed: d.approval === BYPASS,
   })
   if (!isLive(a)) a.transport = d.mode
   if (!a.autoRestart) a.restartAt = null
@@ -885,7 +942,7 @@ async function launchWorker($, a, taskOverride) {
   const ttyPath = os === 'windows' ? '' : dir + a.key + '.tty'
   const spec = {
     id: a.key, lead: leadId, name: a.name, cwd, pluginRoot: $.plugin.root, settingsPath, ttyPath,
-    agentType: a.agentType, model: a.model, effort: a.effort, approval: a.approval, task: taskOverride || a.task,
+    agentType: a.agentType, model: a.model, effort: a.effort, approval: effectiveApproval(a, opts.allowBypass), task: taskOverride || a.task,
   }
   a.script = script
   a.ttyPath = ttyPath
@@ -942,6 +999,7 @@ async function spawnFromDraft($) {
     $.ui.invalidate('ui.render')
     return
   }
+  if (!confirmBypass($, d)) return
   draft = null
   try {
     await $.ui.close({ id: WIZARD })
@@ -951,7 +1009,7 @@ async function spawnFromDraft($) {
   } catch {}
   await spawnSpec($, {
     name, color: d.color, agentType: d.agentType, model: d.model, effort: d.effort, approval: d.approval,
-    transport: d.mode, task: d.task || '', autoRestart: !!d.autoRestart,
+    transport: d.mode, task: d.task || '', autoRestart: !!d.autoRestart, bypassConfirmed: d.approval === BYPASS,
   })
 }
 
@@ -966,6 +1024,7 @@ async function spawnSpec($, spec) {
     status: transport === 'session' ? 'launching' : 'pending', activity: 'spawning…',
     tokens: emptyTokens(), ctx: 0, turns: 0, pending: null, log: [], files: [], lastAnswer: '',
     startedAt: await $.clock.now(), task: spec.task || '',
+    bypassConfirmed: spec.approval === BYPASS && !!spec.bypassConfirmed,
   }
   agents[key] = a
   order = [...order, key]
@@ -1113,7 +1172,7 @@ function statusText() {
       const a = agents[k]
       const sv = statusView(a)
       return [
-        a.name + ' (' + (a.adopted ? 'subagent' : a.transport) + ', ' + a.agentType + ', ' + labelOf(MODELS, a.model) + ', effort ' + a.effort + ', approval ' + a.approval + ')',
+        a.name + ' (' + (a.adopted ? 'subagent' : a.transport) + ', ' + a.agentType + ', ' + labelOf(MODELS, a.model) + ', effort ' + a.effort + ', approval ' + effectiveApproval(a, opts.allowBypass) + ')',
         'status: ' + sv.word + (a.activity ? ' - ' + a.activity : ''),
         'tokens: ' + fmtTokens(totalTokens(a.tokens)) + ', turns: ' + (a.turns || 0) + (a.autoRestart ? ', auto-restart on (' + (a.restarts || 0) + '/' + RESTART_MAX + ' used)' : ''),
         a.pending ? 'waiting on the user: ' + a.pending.summary : '',
@@ -1330,6 +1389,17 @@ function renderWizard($, e) {
   if (d.mode === 'session' && BUILTIN_AGENTS.includes(d.agentType) && d.agentType !== 'general-purpose') {
     notes.push(Text({ dimColor: true, children: [d.agentType + ' is built in; a separate session starts as a normal session.'] }))
   }
+  if (d.approval === BYPASS && opts.allowBypass) {
+    const who = String(d.name || '').trim() || 'this agent'
+    notes.push(Text({
+      color: '#ff5555',
+      bold: true,
+      children: ['Bypass all checks: ' + who + ' runs with every permission check off' +
+        (d.mode === 'session' ? ' (claude --dangerously-skip-permissions)' : ' (the swarm approves every call Claude Code would ask about; deny rules still apply)') +
+        ' in ' + (d.cwd || 'this session’s directory') + '.' +
+        (d.bypassArmed ? ' Press ' + (editing ? 'Save' : 'Spawn') + ' again to confirm.' : '')],
+    }))
+  }
   const ui = { Box, Text, Button }
   const restartOptions = [{ value: 'off', label: 'Off' }, { value: 'on', label: 'Restart if it crashes or hangs (up to ' + RESTART_MAX + 'x)' }]
   return Box({
@@ -1344,7 +1414,7 @@ function renderWizard($, e) {
       picker($, ui, { key: 'effort', label: 'Thinking effort', options: EFFORTS, value: d.effort, next: 'w-name', set: (v) => { d.effort = v } }),
       Input({ key: 'w-name', label: 'Name', placeholder: 'scout', value: d.name, onInput: (v) => { d.name = v }, onSubmit: (v) => { d.name = v; redraw() } }),
       picker($, ui, { key: 'color', label: 'Color', options, value: d.color, next: 'w-approval', set: (v) => { d.color = v }, prefix: [Text({ color: d.color, children: ['●●●'] })] }),
-      picker($, ui, { key: 'approval', label: 'Approval mode', options: APPROVALS, value: d.approval, next: 'w-restart', set: (v) => { d.approval = v } }),
+      picker($, ui, { key: 'approval', label: 'Approval mode', options: approvalOptions(opts.allowBypass), value: d.approval, next: 'w-restart', set: (v) => { d.approval = v; d.bypassArmed = false } }),
       picker($, ui, { key: 'restart', label: 'Auto-restart', options: restartOptions, value: d.autoRestart ? 'on' : 'off', next: 'w-task', set: (v) => { d.autoRestart = v === 'on' } }),
       Input({ key: 'w-task', label: 'Task', placeholder: d.mode === 'session' ? 'first prompt (optional)' : 'what should it work on?', value: d.task, onInput: (v) => { d.task = v }, onSubmit: (v) => { d.task = v; redraw() } }),
       Text({ dimColor: true, wrap: 'truncate-middle', children: ['Workspace: ' + (d.cwd || 'this session’s directory')] }),
@@ -1355,8 +1425,8 @@ function renderWizard($, e) {
         columnGap: 2,
         children: [
           editing
-            ? Button({ key: 'w-save', label: 'Save', onPress: () => saveEdit($) })
-            : Button({ key: 'w-spawn', label: 'Spawn ' + (String(d.name || '').trim() || 'agent'), onPress: () => spawnFromDraft($) }),
+            ? Button({ key: 'w-save', label: d.bypassArmed ? 'Confirm: save with all checks off' : 'Save', onPress: () => saveEdit($) })
+            : Button({ key: 'w-spawn', label: d.bypassArmed ? 'Confirm: spawn with all checks off' : 'Spawn ' + (String(d.name || '').trim() || 'agent'), onPress: () => spawnFromDraft($) }),
           Button({ key: 'w-cancel', label: 'Cancel', onPress: async () => { draft = null; await $.ui.close({ id: WIZARD }) } }),
         ],
       }),
@@ -1384,7 +1454,7 @@ async function renderDetail($, e, key) {
       ],
     }),
   )
-  parts.push(Text({ dimColor: true, wrap: 'truncate-end', children: [a.agentType + ' · ' + labelOf(MODELS, a.model) + (a.resolvedModel ? ' (' + a.resolvedModel + ')' : '') + ' · effort ' + a.effort + ' · ' + labelOf(APPROVALS, a.approval) + ' · ' + colorName(a.color)] }))
+  parts.push(Text({ dimColor: true, wrap: 'truncate-end', children: [a.agentType + ' · ' + labelOf(MODELS, a.model) + (a.resolvedModel ? ' (' + a.resolvedModel + ')' : '') + ' · effort ' + a.effort + ' · ' + labelOf(APPROVALS, effectiveApproval(a, opts.allowBypass)) + ' · ' + colorName(a.color)] }))
   if (a.adopted) {
     const parent = a.parentAgentId ? keyOfAgentId(a.parentAgentId) : null
     parts.push(Text({ dimColor: true, wrap: 'truncate-end', children: ['spawned by ' + (parent ? agents[parent].name : a.parentAgentId ? 'a subagent' : 'Claude') + (a.description ? ' · ' + a.description : '')] }))
@@ -1604,7 +1674,12 @@ function renderRosters($, e) {
 
 // ======================= register =======================
 
-export function register(on) {
+export function register(on, options) {
+  opts = {
+    allowBypass: !!(options && options.allowBypass),
+    workersAcceptMessages: !!(options && options.workersAcceptMessages),
+  }
+
   on('session.start', async ($, e, next) => {
     await detectPlatform($)
     try {
@@ -1801,7 +1876,7 @@ export function register(on) {
     const r = await next(e)
     let decision = r.decision
     if (key) {
-      const mode = agents[key] ? agents[key].approval : 'default'
+      const mode = agents[key] ? effectiveApproval(agents[key], opts.allowBypass) : 'default'
       decision = decide(mode, e.tool, r.decision)
       if (decision === 'allow' && r.decision !== 'allow') return { decision: 'allow', reason: 'Allowed by the swarm approval mode "' + mode + '"' }
       if (decision === 'deny' && r.decision !== 'deny') {

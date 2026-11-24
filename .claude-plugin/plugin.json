@@ -9,5 +9,13 @@
   "license": "MIT",
   "keywords": ["swarm", "agents", "teammates", "orchestration", "pane", "mod"],
   "network": { "hosts": [] },
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "allowBypass": {
+      "type": "boolean",
+      "title": "Offer \"Bypass all checks\" for swarm agents",
+      "description": "Off by default. When on, the spawn form also offers \"Bypass all checks\": a separate session starts with claude --dangerously-skip-permissions, and a teammate has every call approved that Claude Code would ask about. Each use asks you to confirm, naming the folder. Deny rules still apply",
+      "default": false
+    }
+  }
 }

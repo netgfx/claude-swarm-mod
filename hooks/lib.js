@@ -67,6 +67,22 @@ export const APPROVALS = [
   { value: 'bypassPermissions', label: 'Bypass all checks (dangerous)' },
 ]
 
+export const BYPASS = 'bypassPermissions'
+
+// The approval modes the spawn form offers: "Bypass all checks" only when the user
+// turned on the allowBypass option
+export function approvalOptions(allowBypass) {
+  return allowBypass ? APPROVALS : APPROVALS.filter((o) => o.value !== BYPASS)
+}
+
+// The mode an agent really runs in: "Bypass all checks" needs the allowBypass option
+// and a confirmation naming the folder; without both it runs as "Ask me"
+export function effectiveApproval(a, allowBypass) {
+  const mode = (a && a.approval) || 'default'
+  if (mode !== BYPASS) return mode
+  return allowBypass && a.bypassConfirmed ? BYPASS : 'default'
+}
+
 export const BUILTIN_AGENTS = ['general-purpose', 'Explore', 'Plan']
 
 export const EDIT_TOOLS = ['Edit', 'Write', 'NotebookEdit', 'MultiEdit']
@@ -243,7 +259,9 @@ export function claudeArgs(spec) {
   if (spec.agentType && spec.agentType !== 'default' && !BUILTIN_AGENTS.includes(spec.agentType)) args.push('--agent', spec.agentType)
   if (spec.model && spec.model !== 'inherit') args.push('--model', spec.model)
   if (spec.effort && spec.effort !== 'default') args.push('--effort', spec.effort)
-  if (spec.approval === 'bypassPermissions') args.push('--dangerously-skip-permissions')
+  // spec.approval is the effective mode (effectiveApproval): bypass only when the user
+  // turned on allowBypass and confirmed it for this agent and folder
+  if (spec.approval === BYPASS) args.push('--dangerously-skip-permissions')
   else if (spec.approval && spec.approval !== 'default') args.push('--permission-mode', spec.approval)
   // Let the lead's messages through whatever the worker's permission mode. A file, not
   // inline JSON: Windows PowerShell 5.1 mangles quotes inside native arguments.
