@@ -49,7 +49,7 @@ function setup(on: any, opts: { coreCheck?: 'allow' | 'ask' } = {}) {
 }
 
 const pane = (requestId: string, surface: 'terminal' | 'desktop' = 'terminal') => ({
-  plugin: 'swarm-mod', component: 'Pane', requestId, surface,
+  plugin: 'powermods-swarm', component: 'Pane', requestId, surface,
   viewport: { columns: 160, rows: 40 },
   props: { title: requestId, isFocused: true, bodyColumns: 70, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} },
 }) as any
@@ -105,7 +105,7 @@ test("Claude's own subagents join the swarm, with their tokens and status", asyn
 test('a subagent spawned before the mod loaded is picked up from the agent list', async ($, on) => {
   const { seen, clock } = setup(on)
   seen.list.push({ id: 'X1', description: '3D board scene (R3F)', type: 'general-purpose', status: 'completed' })
-  seen.list.push({ id: 'X2', description: 'swarm: scout', type: 'general-purpose', status: 'running', name: 'scout', spawnedBy: 'swarm-mod' })
+  seen.list.push({ id: 'X2', description: 'swarm: scout', type: 'general-purpose', status: 'running', name: 'scout', spawnedBy: 'powermods-swarm' })
   await start($)
   await ticks(clock, 1600)
   const text = await status($)

@@ -1,4 +1,5 @@
-// swarm-mod: spawn, watch and steer a swarm of Claude Code agents from a pane.
+// powermods-swarm (formerly swarm-mod): spawn, watch and steer a swarm of Claude Code
+// agents from a pane.
 //
 // Two transports:
 //  - teammate: $.agent.spawn with a name, so it joins this session's agent team
@@ -18,6 +19,10 @@ import {
   rosterEntry, rosterKey, lastRosterKey, planRoster, validRosterName, modelAlias,
 } from './lib.js'
 
+// The plugin's name: Claude sees the status tool as mcp__powermods-swarm__swarm_status,
+// and other mods read the pane's snapshot as the state value powermods-swarm.snapshot
+const PLUGIN = 'powermods-swarm'
+const OLD_PLUGIN = 'swarm-mod' // the name before 0.5.0, whose saved rosters are copied over once
 const MAIN = 'swarm'
 const WIZARD = 'swarm-spawn'
 const DETAIL = 'swarm-a-'
@@ -111,13 +116,13 @@ async function persist($) {
   if (!snapshotDirty) return
   snapshotDirty = false
   try {
-    await $.state.set({ plugin: 'swarm-mod', key: 'snapshot' }, { agents, order, dismissed: Object.keys(dismissed) })
+    await $.state.set({ plugin: 'powermods-swarm', key: 'snapshot' }, { agents, order, dismissed: Object.keys(dismissed) })
   } catch {}
 }
 
 async function restore($) {
   try {
-    const { value } = await $.state.get({ plugin: 'swarm-mod', key: 'snapshot' })
+    const { value } = await $.state.get({ plugin: 'powermods-swarm', key: 'snapshot' })
     if (value && Array.isArray(value.order) && value.agents) {
       agents = { ...value.agents }
       order = value.order.filter((k) => agents[k])
@@ -172,7 +177,7 @@ async function resolveKey($, agentId) {
       agents[kk].agentId = agentId
       return kk
     }
-    if (hit.spawnedBy !== 'swarm-mod') {
+    if (hit.spawnedBy !== PLUGIN) {
       const ak = adopt({ agentId, name: hit.name, description: hit.description, type: hit.type, status: hit.status, teammateId: hit.teammateId, parentAgentId: hit.parentId }, now)
       if (ak) changed($)
       return ak
@@ -332,7 +337,7 @@ async function leadTick($) {
       }
       // subagents spawned outside the swarm: before this mod loaded, or while it reloaded
       for (const x of list) {
-        if (x.spawnedBy === 'swarm-mod') continue
+        if (x.spawnedBy === PLUGIN) continue
         const isNew = !keyOfAgentId(x.id)
         if (adopt({ agentId: x.id, name: x.name, description: x.description, type: x.type, status: x.status, teammateId: x.teammateId, parentAgentId: x.parentId }, now) && isNew) dirty = true
       }
@@ -1722,7 +1727,7 @@ export function register(on) {
   // Every subagent or teammate spawned in this session joins the swarm, whoever spawned it
   on('agent.spawn', async ($, e, next) => {
     const r = await next(e)
-    if (next.origin.plugin === 'swarm-mod' || e.workflow || !r || r.deny || !r.agentId) return r
+    if (next.origin.plugin === PLUGIN || e.workflow || !r || r.deny || !r.agentId) return r
     try {
       const key = adopt({
         agentId: r.agentId, name: e.name, description: e.description, type: e.subagentType, model: e.model,
@@ -1740,7 +1745,7 @@ export function register(on) {
     return next(e)
   })
 
-  on('tool.call', { tool: 'mcp__swarm-mod__swarm_status' }, async () => ({ result: statusText() }))
+  on('tool.call', { tool: 'mcp__powermods-swarm__swarm_status' }, async () => ({ result: statusText() }))
 
   // Activity, files, and questions of swarm teammates (and of this session when it is a worker)
   on('tool.call', async ($, e, next) => {

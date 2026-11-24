@@ -1,6 +1,6 @@
 declare module 'claude-code' {
   interface PluginState {
-    'swarm-mod': {
+    'powermods-swarm': {
       snapshot: { agents: Record<string, unknown>; order: string[]; dismissed?: string[] }
     }
   }

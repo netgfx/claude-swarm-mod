@@ -62,13 +62,13 @@ function setup(on: any, opts: Opts = {}) {
 }
 
 const pane = (requestId: string, surface: 'terminal' | 'desktop' = 'terminal') => ({
-  plugin: 'swarm-mod', component: 'Pane', requestId, surface,
+  plugin: 'powermods-swarm', component: 'Pane', requestId, surface,
   viewport: { columns: 160, rows: 40 },
   props: { title: requestId, isFocused: true, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 30 }, view: {} },
 }) as any
 
 const band = (surface: 'terminal' | 'desktop' = 'terminal') => ({
-  plugin: 'swarm-mod', component: 'AbovePrompt', requestId: 'single', surface,
+  plugin: 'powermods-swarm', component: 'AbovePrompt', requestId: 'single', surface,
   viewport: { columns: 160, rows: 40 },
   props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120 },
 }) as any
