@@ -7,6 +7,7 @@
   "homepage": "https://github.com/netgfx/claude-swarm-mod",
   "repository": "https://github.com/netgfx/claude-swarm-mod",
   "license": "MIT",
+  "privacyPolicyUrl": "https://github.com/netgfx/claude-swarm-mod/blob/main/PRIVACY.md",
   "keywords": ["swarm", "agents", "teammates", "orchestration", "pane", "mod"],
   "network": { "hosts": [] },
   "types": "./types/index.d.ts",
