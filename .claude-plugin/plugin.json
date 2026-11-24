@@ -16,6 +16,12 @@
       "title": "Offer \"Bypass all checks\" for swarm agents",
       "description": "Off by default. When on, the spawn form also offers \"Bypass all checks\": a separate session starts with claude --dangerously-skip-permissions, and a teammate has every call approved that Claude Code would ask about. Each use asks you to confirm, naming the folder. Deny rules still apply",
       "default": false
+    },
+    "workersAcceptMessages": {
+      "type": "boolean",
+      "title": "Workers accept the lead's messages without asking",
+      "description": "Off by default, so separate-session workers keep Claude Code's own setting for messages from other sessions and may hold a message for your approval in their window. When on, each worker starts with crossSessionInbound set to accept (for that worker only, through --settings)",
+      "default": false
     }
   }
 }

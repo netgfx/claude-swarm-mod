@@ -938,7 +938,10 @@ async function launchWorker($, a, taskOverride) {
   const s = sep()
   const dir = homeDir + s + '.claude' + s + 'swarm-mod' + s + 'launch' + s
   const script = dir + a.key + (os === 'windows' ? '.ps1' : os === 'mac' ? '.command' : '.sh')
-  const settingsPath = dir + 'worker-settings.json'
+  // Only with the workersAcceptMessages option: a settings file that sets
+  // crossSessionInbound to accept for this worker alone. Otherwise the worker keeps
+  // Claude Code's default (or the user's own setting) for messages from other sessions.
+  const settingsPath = opts.workersAcceptMessages ? dir + 'worker-settings.json' : ''
   const ttyPath = os === 'windows' ? '' : dir + a.key + '.tty'
   const spec = {
     id: a.key, lead: leadId, name: a.name, cwd, pluginRoot: $.plugin.root, settingsPath, ttyPath,
@@ -953,7 +956,7 @@ async function launchWorker($, a, taskOverride) {
     } catch {}
   }
   try {
-    await $.fs.write(settingsPath, WORKER_SETTINGS)
+    if (settingsPath) await $.fs.write(settingsPath, WORKER_SETTINGS)
     await $.fs.write(script, launchScript(os === 'windows' ? 'windows' : 'posix', spec))
     await $.store.set('r:' + a.key, { decisions: {}, abortSeq: 0 })
   } catch (err) {
@@ -1083,11 +1086,18 @@ async function sendTo($, key, text) {
       changed($)
       return true
     }
-    await toast($, 'Not delivered to ' + a.name + ': ' + r.reason)
+    await toast($, 'Not delivered to ' + a.name + ': ' + r.reason + (a.transport === 'session' ? inboundHint() : ''))
   } catch (err) {
     await toast($, 'Not delivered to ' + a.name + ': ' + (err && err.message))
   }
   return false
+}
+
+// A worker keeps its own crossSessionInbound setting unless workersAcceptMessages is on
+function inboundHint() {
+  return opts.workersAcceptMessages
+    ? ''
+    : ". If its window holds or refuses messages from other sessions, approve it there, or turn on the workersAcceptMessages option"
 }
 
 async function broadcast($, text) {
@@ -1388,6 +1398,9 @@ function renderWizard($, e) {
   }
   if (d.mode === 'session' && BUILTIN_AGENTS.includes(d.agentType) && d.agentType !== 'general-purpose') {
     notes.push(Text({ dimColor: true, children: [d.agentType + ' is built in; a separate session starts as a normal session.'] }))
+  }
+  if (d.mode === 'session' && !opts.workersAcceptMessages) {
+    notes.push(Text({ dimColor: true, children: ["Your messages reach it under its own setting for messages from other sessions (crossSessionInbound). If it holds one, approve it in the worker's window."] }))
   }
   if (d.approval === BYPASS && opts.allowBypass) {
     const who = String(d.name || '').trim() || 'this agent'

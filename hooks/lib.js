@@ -263,8 +263,9 @@ export function claudeArgs(spec) {
   // turned on allowBypass and confirmed it for this agent and folder
   if (spec.approval === BYPASS) args.push('--dangerously-skip-permissions')
   else if (spec.approval && spec.approval !== 'default') args.push('--permission-mode', spec.approval)
-  // Let the lead's messages through whatever the worker's permission mode. A file, not
-  // inline JSON: Windows PowerShell 5.1 mangles quotes inside native arguments.
+  // Only when the user turned on workersAcceptMessages: a settings file that lets the
+  // lead's messages through. A file, not inline JSON: Windows PowerShell 5.1 mangles
+  // quotes inside native arguments.
   if (spec.settingsPath) args.push('--settings', spec.settingsPath)
   // The first task is not an argument either: it travels in SWARM_MOD_TASK and the
   // worker submits it, so no quoting of free text reaches a command line.
@@ -435,7 +436,9 @@ export function randomId(rand = Math.random) {
   return s
 }
 
-// The settings file a worker starts with
+// The settings file a worker starts with, written only when the user turned on the
+// workersAcceptMessages option. Without it workers keep Claude Code's own default for
+// messages from other sessions (or the user's own crossSessionInbound setting).
 export const WORKER_SETTINGS = JSON.stringify({ crossSessionInbound: 'accept' }, null, 2) + '\n'
 
 // ---------- process ids (kill a separate session) ----------
