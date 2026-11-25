@@ -1714,22 +1714,14 @@ async function pruneReports($) {
 
 // ======================= hook error handlers =======================
 
-// A hook of this mod that throws or times out never blocks anything: the event goes on
-// as if the mod were not there (next(e) returns the earlier result when the hook had
-// already called next).
-function failOpen($, e, next) {
-  return next(e)
-}
-
-// tool.check fails open too, except for a swarm agent in plan or dont-ask mode: those
-// modes are restrictions the user chose, so a failed check denies instead.
-function checkFailed($, e, next) {
+// Every hook fails open: a hook that throws or times out leaves the event to Claude Code
+// (each .catch is written inline as ($, e, next) => next(e)). tool.check is the one
+// exception: for a swarm agent in plan or dont-ask mode, restrictions the user chose, a
+// failed check denies instead. Returns that agent's mode, or ''.
+function restrictedModeOf(e) {
   const info = e && e.tool_use_id ? callInfo[e.tool_use_id] : null
   const mode = info && info.key && agents[info.key] ? agents[info.key].approval : ''
-  if (mode === 'plan' || mode === 'dontAsk') {
-    return { decision: 'deny', reason: 'The swarm could not check this call for an agent in ' + mode + ' mode, so it was denied. Ask the lead how to proceed.' }
-  }
-  return next(e)
+  return mode === 'plan' || mode === 'dontAsk' ? mode : ''
 }
 
 // ======================= renamed from swarm-mod =======================
@@ -1849,7 +1841,7 @@ export function register(on, options) {
   on('classic.SessionStart', { source: ['clear', 'resume', 'fork'] }, async ($, e, next) => {
     snapshotDirty = true
     return next(e)
-  }).catch(failOpen)
+  }).catch(($, e, next) => next(e))
 
   on('session.end', async ($, e, next) => {
     if (worker && w && w.status !== 'killed') {
@@ -1925,14 +1917,14 @@ export function register(on, options) {
       $.ui.log('swarm: could not track ' + (e.description || 'a subagent') + ': ' + (err && err.message), { to: 'debug' })
     }
     return r
-  }).catch(failOpen)
+  }).catch(($, e, next) => next(e))
 
   on('agent.offer', async ($, e, next) => {
     agentTypes[e.agent] = e.description
     return next(e)
-  }).catch(failOpen)
+  }).catch(($, e, next) => next(e))
 
-  on('tool.call', { tool: 'mcp__powermods-swarm__swarm_status' }, async () => ({ result: statusText() })).catch(failOpen)
+  on('tool.call', { tool: 'mcp__powermods-swarm__swarm_status' }, async () => ({ result: statusText() })).catch(($, e, next) => next(e))
 
   // Activity, files, and questions of swarm teammates (and of this session when it is a worker)
   on('tool.call', async ($, e, next) => {
@@ -1978,7 +1970,7 @@ export function register(on, options) {
         wDirty = true
       }
     }
-  }).catch(failOpen)
+  }).catch(($, e, next) => next(e))
 
   // Approval modes for teammates; approvals routed to the swarm pane
   on('tool.check', async ($, e, next) => {
@@ -2016,7 +2008,10 @@ export function register(on, options) {
     if (d && d.decision === 'allow') return { decision: 'allow', reason: 'Approved by the user in the swarm pane' }
     if (d && d.decision === 'deny') return { decision: 'deny', reason: 'The user denied this in the swarm pane. Do not retry it; ask how to proceed.' }
     return r
-  }).catch(checkFailed)
+  }).catch(($, e, next) => {
+    if (!restrictedModeOf(e)) return next(e)
+    return { decision: 'deny', reason: 'The swarm could not check this call for an agent in ' + restrictedModeOf(e) + ' mode, so it was denied. Ask the lead how to proceed.' }
+  })
 
   // Per-agent effort, and token accounting
   on('turn.step', async function* ($, e, next) {
@@ -2090,7 +2085,7 @@ export function register(on, options) {
       }
     }
     return next(e)
-  }).catch(failOpen)
+  }).catch(($, e, next) => next(e))
 
   on('ui.render', { component: 'Pane' }, async ($, e, next) => {
     if (e.requestId === MAIN) return renderMain($, e)
