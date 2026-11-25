@@ -3,7 +3,7 @@
   "owner": { "name": "Michael Dobekidis", "email": "djmid71@gmail.com", "url": "https://github.com/netgfx" },
   "metadata": {
     "description": "Swarm (powermods-swarm): spawn, watch and steer a swarm of Claude Code agents from a side pane",
-    "version": "0.5.0"
+    "version": "0.5.1"
   },
   "plugins": [
     {
@@ -11,7 +11,7 @@
       "source": "./",
       "displayName": "Swarm",
       "description": "Spawn, watch and steer a swarm of Claude Code agents from a side pane: live status and token use, approvals and questions, messaging, kill and auto-restart, saved rosters",
-      "version": "0.5.0",
+      "version": "0.5.1",
       "author": { "name": "Michael Dobekidis", "email": "djmid71@gmail.com", "url": "https://github.com/netgfx" },
       "homepage": "https://github.com/netgfx/claude-swarm-mod",
       "repository": "https://github.com/netgfx/claude-swarm-mod",

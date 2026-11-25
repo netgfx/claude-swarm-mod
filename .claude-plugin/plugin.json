@@ -1,7 +1,7 @@
 {
   "name": "powermods-swarm",
   "displayName": "Swarm",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Spawn, watch and steer a swarm of Claude Code agents from a side pane: live status and token use, approvals and questions, messaging, kill and auto-restart, saved rosters",
   "author": { "name": "Michael Dobekidis", "email": "djmid71@gmail.com", "url": "https://github.com/netgfx" },
   "homepage": "https://github.com/netgfx/claude-swarm-mod",
