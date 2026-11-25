@@ -405,7 +405,7 @@ export function focusArgv(os, name, where = {}) {
 
 // Parses `name:` and `description:` from an agent file's frontmatter
 export function parseAgentFile(text) {
-  const m = /^﻿?---\r?\n([\s\S]*?)\r?\n---/.exec(String(text))
+  const m = /^\uFEFF?---\r?\n([\s\S]*?)\r?\n---/.exec(String(text))
   if (!m) return null
   const field = (k) => {
     const r = new RegExp('^' + k + ':\\s*(.*)$', 'm').exec(m[1])

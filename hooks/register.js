@@ -135,11 +135,12 @@ async function restore($) {
   } catch {}
 }
 
-// Waits about a second without a timer (hook budgets exclude time in $ calls)
+// Waits about a second without a timer (hook budgets exclude time in $ calls).
+// Each command is fixed text: ping twice to localhost on Windows, sleep 1 elsewhere.
 async function waitTick($) {
-  const argv = platform === 'windows' ? ['ping', '-n', '2', '127.0.0.1'] : ['sleep', '1']
   try {
-    await $.process.run(argv, { timeoutMs: 5000 })
+    if (platform === 'windows') await $.process.run(['ping', '-n', '2', '127.0.0.1'], { timeoutMs: 5000 })
+    else await $.process.run(['sleep', '1'], { timeoutMs: 5000 })
   } catch {
     await $.clock.sleep(250)
   }
